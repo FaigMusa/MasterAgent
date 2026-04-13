@@ -147,13 +147,16 @@ def handle_messages(message):
 
 # ================= MASTER START =================
 if __name__ == '__main__':
+    # Botun köhnə bağlantılarını (Webhook və ya Polling) təmizləyirik
+    print("Bağlantılar təmizlənir...")
     bot.remove_webhook()
-    time.sleep(2)
+    time.sleep(1) # Qısa fasilə veririk
     
+    # Arxa plan modullarını işə salırıq
     threading.Thread(target=scout_loop, daemon=True).start()
     threading.Thread(target=run_scheduler, daemon=True).start()
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
-    print("M.Genat 1.2 aktivdir!")
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    # Botun dinləmə rejimi (Polling)
+    # interval=2 əlavə edərək serveri yormuruq
+    print("M.Genat 1.2 aktivləşdirilir...")
+    bot.infinity_polling(timeout=10, long_polling_timeout=5)
