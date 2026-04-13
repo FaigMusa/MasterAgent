@@ -129,8 +129,10 @@ def handle_messages(message):
             response = model.generate_content(prompt).text
             bot.reply_to(message, response, parse_mode="Markdown")
         except Exception as e:
-            print(f"Gemini Xətası: {e}")
-            bot.reply_to(message, "Bağışla, beynimdə qısaqapanma oldu. Yenidən soruş.")
+            # XƏTANI GİZLƏTMİRİK, BİRBAŞA TELEGRAMA YAZIRIQ
+            error_message = f"❌ **KRİTİK XƏTA DETEKTED:**\n`{str(e)}`"
+            bot.reply_to(message, error_message, parse_mode="Markdown")
+            print(f"Server Log Xətası: {e}")
 
 # ================= MASTER START =================
 if __name__ == '__main__':
