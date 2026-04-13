@@ -18,7 +18,29 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GOOGLE_JSON = os.getenv('GOOGLE_JSON')
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# ================= DİNAMİK BEYİN SEÇİMİ (UNİKAL SİSTEM) =================
+def load_brain():
+    print("M.Genat aktiv modelləri axtarır...")
+    try:
+        # Google-dan sənə icazə verilən modellərin siyahısını çəkirik
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        print(f"Tapılan modellər: {available_models}")
+        
+        # Ən yaxşıdan ən sadəyə doğru avtomatik seçim edirik
+        if 'models/gemini-1.5-flash-latest' in available_models:
+            return genai.GenerativeModel('gemini-1.5-flash-latest')
+        elif 'models/gemini-1.5-flash' in available_models:
+            return genai.GenerativeModel('gemini-1.5-flash')
+        else:
+            # Əgər flash heç cür yoxdursa, zəmanətli klassik modelə keçirik
+            return genai.GenerativeModel('gemini-pro')
+    except Exception as e:
+        print(f"Model siyahısı çəkilərkən xəta: {e}")
+        return genai.GenerativeModel('gemini-pro') # Ən pis halda qoruyucu yastıq
+
+# Modeli işə salırıq
+model = load_brain()
+# ========================================================================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə), ICLN (Yenilənəbilən)"
