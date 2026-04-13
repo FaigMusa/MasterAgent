@@ -82,13 +82,23 @@ def scout_loop():
         time.sleep(300)
 
 # ================= MASTER START =================
+# ================= MASTER START =================
 if __name__ == '__main__':
-    # Bot modullarını arxa planda işə salırıq
+    # 1. Serverin tam aktivləşməsi üçün 10 saniyə gözləyirik (Bulud üçün vacibdir)
+    print("Sistem isidilir, 10 saniyə gözləyin...")
+    time.sleep(10)
+    
+    # 2. Modulları işə salırıq
     threading.Thread(target=scout_loop, daemon=True).start()
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    send_tg("🚀 **PHILL MASTER AGENT v3.0 İŞƏ DÜŞDÜ!**\nSistem artıq buluddadır və 24/7 səninlədir.")
+    # 3. İLK SALAM MESAJI (Zəmanətli çatdırılma üçün)
+    try:
+        send_tg("🚀 **PHILL MASTER AGENT v3.0 İŞƏ DÜŞDÜ!**\n\nSistem artıq Render buludunda 24/7 canlıdır. İlk kəşfiyyat hesabatlarını gözləyin.")
+        print("Telegram-a ilk siqnal göndərildi.")
+    except Exception as e:
+        print(f"Telegram-a mesaj gedərkən xəta: {e}")
     
-    # Flask veb serverini işə salırıq
+    # 4. Flask Veb Serveri (Sistemi oyaq saxlayan hissə)
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
