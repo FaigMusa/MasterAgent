@@ -5,7 +5,7 @@ import time
 import threading
 import schedule
 from datetime import datetime
-import google.generativeai as genai
+from google import genai # <--- YENİ NƏSİL KİTABXANA
 from flask import Flask
 import os
 import feedparser
@@ -16,40 +16,9 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GOOGLE_JSON = os.getenv('GOOGLE_JSON')
-genai.configure(api_key=GEMINI_API_KEY)
-# ================= UNİKAL DİNAMİK BEYİN SEÇİMİ =================
-def initialize_brain():
-    print("M.Genat aktiv modelləri axtarır...")
-    try:
-        # Google-dan əlçatan bütün modelləri çəkirik
-        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        print(f"Sistemdə tapılan modellər: {all_models}")
 
-        # Ən güclü və müasir olanı seçirik (Priority List)
-        # Sənin regionunda hansı aktivdirsə, onu ilk sıraya qoyuruq
-        priorities = [
-            'models/gemini-2.0-flash', 
-            'models/gemini-1.5-flash', 
-            'models/gemini-1.5-flash-latest', 
-            'models/gemini-pro'
-        ]
-        
-        for p in priorities:
-            if p in all_models:
-                print(f"Seçilən beyin: {p}")
-                return genai.GenerativeModel(p)
-        
-        # Əgər heç biri tapılmasa, siyahıdakı ilk mövcud modeli götür
-        if all_models:
-            return genai.GenerativeModel(all_models[0])
-            
-    except Exception as e:
-        print(f"Dinamik seçim xətası: {e}. Standart rejimə keçilir.")
-        return genai.GenerativeModel('gemini-1.5-flash')
-
-# Modeli işə salırıq
-model = initialize_brain()
-# ==============================================================
+# YENİ NƏSİL API BAĞLANTISI
+client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə), ICLN (Yenilənəbilən)"
@@ -89,8 +58,9 @@ def generate_report(report_type="GÜNLÜK"):
     now = datetime.now().strftime("%d %B %Y, %H:%M")
     prompt = f"Sən M.Genat 1.2-sən. {report_type} hesabat hazırla. Portfel: {PORTFOLIO}. Azərbaycan dilində."
     try:
-        report = model.generate_content(prompt).text
-        send_tg(f"🏛️ **{report_type} STRATEJİ HESABAT** 🏛️\n\n{report}")
+        # YENİ METODLA ÇAĞIRIŞ (Ən son model 2.5 flash)
+        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+        send_tg(f"🏛️ **{report_type} STRATEJİ HESABAT** 🏛️\n\n{response.text}")
     except Exception as e:
         print(f"Report xətası: {e}")
 
@@ -111,7 +81,11 @@ def scout_loop():
                     if entry.title not in seen_news:
                         seen_news.add(entry.title)
                         prompt = f"Xəbər: '{entry.title}'. Portfel: {PORTFOLIO}. Əgər kritikdirsə '🚨 TƏCİLİ:' yaz, yoxsa 'GÖZARDI' yaz."
-                        res = model.generate_content(prompt).text.strip()
+                        
+                        # YENİ METODLA ÇAĞIRIŞ
+                        response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+                        res = response.text.strip()
+                        
                         if "🚨 TƏCİLİ" in res:
                             send_tg(f"{res}\n\n🔗 {entry.title}")
             except:
@@ -157,10 +131,12 @@ def handle_messages(message):
         try:
             bot.send_chat_action(message.chat.id, 'typing')
             prompt = f"Sən M.Genat 1.2-sən. Phill-in asistantısan. Sual: {user_text}"
-            response = model.generate_content(prompt).text
-            bot.reply_to(message, response, parse_mode="Markdown")
+            
+            # YENİ METODLA ÇAĞIRIŞ
+            response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+            bot.reply_to(message, response.text, parse_mode="Markdown")
+            
         except Exception as e:
-            # XƏTANI GİZLƏTMİRİK, BİRBAŞA TELEGRAMA YAZIRIQ
             error_message = f"❌ **KRİTİK XƏTA DETEKTED:**\n`{str(e)}`"
             bot.reply_to(message, error_message, parse_mode="Markdown")
             print(f"Server Log Xətası: {e}")
