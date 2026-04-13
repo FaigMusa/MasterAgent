@@ -143,11 +143,25 @@ def handle_messages(message):
 
 # ================= MASTER START =================
 if __name__ == '__main__':
-    time.sleep(10)
+    # 1. Köhnə bağlantıları təmizləyirik (409 xətasının qarşısını almaq üçün)
+    print("Köhnə bağlantılar təmizlənir...")
+    bot.remove_webhook()
+    time.sleep(2) # Qısa fasilə
+    
+    # 2. Arxa plan modullarını işə salırıq
     threading.Thread(target=scout_loop, daemon=True).start()
     threading.Thread(target=run_scheduler, daemon=True).start()
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
-    print("M.Genat 1.2 aktivdir!")
+    # 3. Botun dinləmə rejimi (Polling)
+    # interval=3 əlavə edirik ki, serveri yormasın və konflikt ehtimalı azalsın
+    threading.Thread(target=bot.infinity_polling, kwargs={'timeout':60, 'long_polling_timeout':60}, daemon=True).start()
+    
+    print("M.Genat 1.2 rəsmi olaraq aktivdir!")
+    
+    try:
+        send_tg("🚀 **M.GENAT v1.2 YENİDƏN AKTİV!**\nBütün sistemlər yeniləndi və bulud mühərriki stabilləşdi.")
+    except:
+        pass
+    
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
