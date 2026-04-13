@@ -54,8 +54,8 @@ def generate_report(report_type="GÜNLÜK"):
     Hər sektor üçün qiymət hərəkəti (🟢/🔴). Dil: Azərbaycan.
     """
     try:
-        # DƏYİŞİKLİK BURADADIR: 2.0-flash (Yüksək limit, Aktiv model)
-        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+        # Yeni SDK ilə 1.5-flash artıq xətasız və limitsiz işləyəcək
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         send_tg(f"🏛️ **{report_type} STRATEJİ HESABAT** ({now})\n\n{response.text}")
     except Exception as e:
         print(f"Report xətası: {e}")
@@ -76,12 +76,19 @@ def scout_loop():
                         seen_news.add(entry.title)
                         prompt = f"Xəbər: '{entry.title}'. Portfel: {PORTFOLIO}. Əgər ciddi təsiri varsa, '🚨 TƏCİLİ:' yazaraq analiz et."
                         
-                        # DƏYİŞİKLİK BURADADIR
-                        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-                        if "🚨 TƏCİLİ" in response.text:
-                            send_tg(f"{response.text}\n\n🔗 {entry.link}")
+                        try:
+                            # Model 1.5-flash
+                            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+                            if "🚨 TƏCİLİ" in response.text:
+                                send_tg(f"{response.text}\n\n🔗 {entry.link}")
+                            
+                            # RADARA DÜŞMƏMƏK ÜÇÜN 5 SANİYƏ SOYUTMA!
+                            time.sleep(5) 
+                        except Exception as e:
+                            print(f"Scout API xətası: {e}")
+                            time.sleep(10) # Xəta olsa 10 saniyə gözlə
             except: continue
-        time.sleep(600)
+        time.sleep(600) # 10 dəqiqədən bir axtarışa çıx
 
 def run_scheduler():
     schedule.every().day.at("08:00").do(generate_report, report_type="SƏHƏR AÇILIŞI")
@@ -133,12 +140,10 @@ def handle_messages(message):
         try:
             bot.send_chat_action(message.chat.id, 'typing')
             prompt = f"Sən M.Genat 1.2-sən. Sual: {message.text}"
-            
-            # DƏYİŞİKLİK BURADADIR
-            response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
             bot.reply_to(message, response.text, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"❌ Xəta: {str(e)}")
+            bot.reply_to(message, f"❌ Xəta (Ola bilsin limit dolub, 1 dəqiqə gözlə): {str(e)}")
 
 # ================= MASTER START =================
 if __name__ == '__main__':
