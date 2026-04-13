@@ -3,3 +3,4 @@ requests
 feedparser
 schedule
 Flask
+gunicorn
