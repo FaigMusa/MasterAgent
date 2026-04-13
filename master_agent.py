@@ -18,7 +18,7 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GOOGLE_JSON = os.getenv('GOOGLE_JSON') # YENİ ƏLAVƏ: Baza açarı
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Botu inisializasiya edirik
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -101,7 +101,9 @@ def scout_loop():
 @bot.message_handler(func=lambda message: True)
 def handle_messages(message):
     if str(message.chat.id) != str(CHAT_ID): return
-    
+    except Exception as e:
+            print(f"KRİTİK XƏTA: {str(e)}") # Bu sətir xətanı bizə deyəcək
+            bot.reply_to(message, "Bağışla, beynimdə qısaqapanma oldu. Yenidən soruş.")
     user_text = message.text
     text_lower = user_text.lower()
 
