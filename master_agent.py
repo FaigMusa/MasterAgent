@@ -16,31 +16,40 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GOOGLE_JSON = os.getenv('GOOGLE_JSON')
-
 genai.configure(api_key=GEMINI_API_KEY)
-# ================= DİNAMİK BEYİN SEÇİMİ (UNİKAL SİSTEM) =================
-def load_brain():
+# ================= UNİKAL DİNAMİK BEYİN SEÇİMİ =================
+def initialize_brain():
     print("M.Genat aktiv modelləri axtarır...")
     try:
-        # Google-dan sənə icazə verilən modellərin siyahısını çəkirik
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        print(f"Tapılan modellər: {available_models}")
+        # Google-dan əlçatan bütün modelləri çəkirik
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        print(f"Sistemdə tapılan modellər: {all_models}")
+
+        # Ən güclü və müasir olanı seçirik (Priority List)
+        # Sənin regionunda hansı aktivdirsə, onu ilk sıraya qoyuruq
+        priorities = [
+            'models/gemini-2.0-flash', 
+            'models/gemini-1.5-flash', 
+            'models/gemini-1.5-flash-latest', 
+            'models/gemini-pro'
+        ]
         
-        # Ən yaxşıdan ən sadəyə doğru avtomatik seçim edirik
-        if 'models/gemini-1.5-flash-latest' in available_models:
-            return genai.GenerativeModel('gemini-1.5-flash-latest')
-        elif 'models/gemini-1.5-flash' in available_models:
-            return genai.GenerativeModel('gemini-1.5-flash')
-        else:
-            # Əgər flash heç cür yoxdursa, zəmanətli klassik modelə keçirik
-            return genai.GenerativeModel('gemini-pro')
+        for p in priorities:
+            if p in all_models:
+                print(f"Seçilən beyin: {p}")
+                return genai.GenerativeModel(p)
+        
+        # Əgər heç biri tapılmasa, siyahıdakı ilk mövcud modeli götür
+        if all_models:
+            return genai.GenerativeModel(all_models[0])
+            
     except Exception as e:
-        print(f"Model siyahısı çəkilərkən xəta: {e}")
-        return genai.GenerativeModel('gemini-pro') # Ən pis halda qoruyucu yastıq
+        print(f"Dinamik seçim xətası: {e}. Standart rejimə keçilir.")
+        return genai.GenerativeModel('gemini-1.5-flash')
 
 # Modeli işə salırıq
-model = load_brain()
-# ========================================================================
+model = initialize_brain()
+# ==============================================================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə), ICLN (Yenilənəbilən)"
