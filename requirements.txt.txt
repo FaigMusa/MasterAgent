@@ -1,4 +1,0 @@
-google-generativeai
-requests
-feedparser
-schedule
