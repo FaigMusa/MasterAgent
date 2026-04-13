@@ -2,96 +2,93 @@ import requests
 import feedparser
 import time
 import threading
+import schedule
 from datetime import datetime
 import google.generativeai as genai
+from flask import Flask # YENİ ƏLAVƏ
+import os # YENİ ƏLAVƏ
 
 # ================= TƏNZİMLƏMƏLƏR =================
-TELEGRAM_TOKEN = '8702831719:AAF1JfrZRaXT1c1M2147W-NEu-q1IyRkzMc'
-CHAT_ID = '7018381058'
-GEMINI_API_KEY = 'AIzaSyAKopAYo4sW7VnUj6or3-XxGwiACLFmryk'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə Enerjisi ETF), ICLN (Yenilənəbilən Enerji ETF)"
-
-# Çoxlu xəbər mənbələri
+PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə), ICLN (Yenilənəbilən)"
 NEWS_SOURCES = [
     "https://finance.yahoo.com/news/rssindex",
     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
     "http://feeds.marketwatch.com/marketwatch/topstories/"
 ]
 
-# ================= TELEGRAM MODULU =================
-def send_telegram_alert(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    max_length = 4000
-    for i in range(0, len(text), max_length):
-        chunk = text[i:i+max_length]
-        response = requests.post(url, json={"chat_id": CHAT_ID, "text": chunk, "parse_mode": "Markdown"})
-        if response.status_code != 200:
-            requests.post(url, json={"chat_id": CHAT_ID, "text": chunk})
+# ================= FLASK SERVER (OYAQ QALMAQ ÜÇÜN) =================
+app = Flask(__name__)
 
-# ================= 1. MULTI-SOURCE SCOUT =================
+@app.route('/')
+def home():
+    return "Mühərrik aktivdir! Master Agent 3.0 bazarı izləyir."
+
+# ================= FUNKSİYALAR =================
+def send_tg(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try:
+        r = requests.post(url, json=payload)
+        if r.status_code != 200:
+            requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+    except:
+        pass
+
+def generate_report(type="GÜNLÜK"):
+    now = datetime.now().strftime("%d %B %Y, %H:%M")
+    prompt = f"""
+    Sən Goldman Sachs, J.P. Morgan və Ray Dalio (Bridgewater) analitiklərindən ibarət komitəsən.
+    HESABAT NÖVÜ: {type} | TARİX: {now} | PORTFEL: {PORTFOLIO}
+    1. Goldman Sachs: Aqressiv hədəflər.
+    2. J.P. Morgan: Makro risklər.
+    3. Ray Dalio: Uzunmüddətli iqtisadi dövrlər və diversifikasiya.
+    4. Yekun Strategiya: Phill üçün konkret addım.
+    Azərbaycan dilində yaz.
+    """
+    try:
+        report = model.generate_content(prompt).text
+        send_tg(f"🏛️ **{type} STRATEJİ HESABAT** 🏛️\n\n{report}")
+    except:
+        pass
+
+def run_scheduler():
+    schedule.every().day.at("08:30").do(generate_report, type="SƏHƏR AÇILIŞI")
+    schedule.every().day.at("20:00").do(generate_report, type="AXŞAM YEKUNU")
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
 def scout_loop():
-    print(f"\n[📡 Kəşfiyyatçı] {len(NEWS_SOURCES)} fərqli mənbədən canlı izləmə başladı...\n")
     seen_news = set()
     while True:
         for url in NEWS_SOURCES:
             try:
                 feed = feedparser.parse(url)
-                for entry in feed.entries[:3]: # Hər mənbədən son 3 xəbər
+                for entry in feed.entries[:3]:
                     if entry.title not in seen_news:
                         seen_news.add(entry.title)
-                        
-                        prompt = f"Xəbər: '{entry.title}'. Portfel: {PORTFOLIO}. Əgər bu xəbər portfeli sarsıdacaq gücdədirsə '🚨 TƏCİLİ:' ilə başlayan analiz yaz, yoxsa 'GÖZARDI' yaz."
-                        ai_decision = model.generate_content(prompt).text.strip()
-                        
-                        if "🚨 TƏCİLİ" in ai_decision:
-                            msg = f"{ai_decision}\n\n🔗 Mənbə: {entry.title}"
-                            send_telegram_alert(msg)
-                            print(f"\n[🚨 SİQNAL] {entry.title} - Göndərildi!")
+                        prompt = f"Xəbər: '{entry.title}'. Portfel: {PORTFOLIO}. Əgər kritikdirsə '🚨 TƏCİLİ:' yaz, yoxsa 'GÖZARDI' yaz."
+                        res = model.generate_content(prompt).text.strip()
+                        if "🚨 TƏCİLİ" in res:
+                            send_tg(f"{res}\n\n🔗 {entry.title}")
             except: continue
         time.sleep(300)
 
-# ================= 2. HQ CONSILIUM =================
-def generate_hq_consilium(user_query):
-    canli_tarix = datetime.now().strftime("%d %B %Y, %H:%M")
-    prompt = f"""
-    Sən Goldman Sachs, J.P. Morgan və BlackRock-un baş analitiklərindən ibarət 'Strateji Komitə'sən.
-    TARİX: {canli_tarix}. Portfel: {PORTFOLIO}.
-    Phill-in sualı: "{user_query}"
-    
-    Hesabatı bu struktura uyğun hazırla:
-    1. **Goldman Sachs Baxışı:** (Aqressiv maliyyə analizi və hədəf qiymətlər)
-    2. **J.P. Morgan Baxışı:** (Makro risklər və ehtiyatlı yanaşma)
-    3. **BlackRock Baxışı:** (Uzunmüddətli ETF axınları və institusional mövqe)
-    4. **Yekun Konsensus:** (Üç bankın ortaq tövsiyəsi və Phill üçün konkret addım)
-    
-    Dili peşəkar və Azərbaycan dilində olsun.
-    """
-    try:
-        return model.generate_content(prompt).text
-    except:
-        return "API Yüklənməsi: Zəhmət olmasa 1 dəqiqə sonra yenidən soruşun."
-
-# ================= MASTER CONTROLLER =================
-def main():
-    print("="*70)
-    print("🏛️ PHILL'İN MULTİ-BANK STRATEGİYA TERMİNALI (v2.0) İŞƏ DÜŞDÜ 🏛️")
-    print("="*70)
-    
-    threading.Thread(target=scout_loop, daemon=True).start()
-    
-    while True:
-        query = input("\n[🏛️ HQ Konsilium] Sualınızı daxil edin (məs. 'Amerika-İran gərginliyi'):\n>> ")
-        if query.lower() == 'q': break
-        if not query.strip(): continue
-        
-        print("\n⏳ Banklar arası konsilium toplanır... Hesabat hazırlanır...\n")
-        result = generate_hq_consilium(query)
-        print(f"\n{'='*70}\n{result}\n{'='*70}")
-        send_telegram_alert(f"🏛️ **HQ KONSİLİUM HESABATI** 🏛️\n\n{result}")
-
+# ================= MASTER START =================
 if __name__ == '__main__':
-    main()
+    # Bot modullarını arxa planda işə salırıq
+    threading.Thread(target=scout_loop, daemon=True).start()
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    
+    send_tg("🚀 **PHILL MASTER AGENT v3.0 İŞƏ DÜŞDÜ!**\nSistem artıq buluddadır və 24/7 səninlədir.")
+    
+    # Flask veb serverini işə salırıq
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
