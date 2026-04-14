@@ -20,7 +20,7 @@ WEBHOOK_URL     = os.getenv('WEBHOOK_URL', '').rstrip('/')
 # API Xətalarının Qarşısını Alan Model Formatı
 raw_model = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash')
 clean_model = str(raw_model).strip().replace('"', '').replace("'", "")
-GEMINI_MODEL = clean_model if clean_model.startswith("models/") else f"models/{clean_model}"
+GEMINI_MODEL = _raw.removeprefix('models/')
 
 if not GEMINI_API_KEY:
     print("🚨 KRİTİK: GEMINI_API_KEY tapılmadı! Mühərrik kor vəziyyətdədir.")
