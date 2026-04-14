@@ -17,8 +17,7 @@ CHAT_ID         = os.getenv('CHAT_ID')
 GEMINI_API_KEY  = os.getenv('GEMINI_API_KEY')
 WEBHOOK_URL     = os.getenv('WEBHOOK_URL', '').rstrip('/')
 
-# Claude-un tapdığı 404-ün qəti həlli: 
-# models/ prefiksini silirik, çünki SDK onu özü əlavə edəcək.
+# Model adını təmizləyirik
 _raw = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash').strip().replace('"', '').replace("'", "")
 GEMINI_MODEL = _raw.replace('models/', '')
 
@@ -30,35 +29,46 @@ DINAMIK_PORTFEL = ["ETH", "BTC", "NVDA", "AMD", "SMH", "NLR", "URA", "BOTZ", "TS
 XATIRLATMALAR   = []
 
 # ═══════════════════════════════════════════════════════════════════════
-#  GEMINI — 429 Limit Qoruması
+#  GEMINI — SELF-HEALING (404) & RETRY (429) MEXANİZMİ
 # ═══════════════════════════════════════════════════════════════════════
 def gemini_call(prompt: str, retries: int = 3) -> str:
     delay = 10
+    current_model = GEMINI_MODEL
+    
     for attempt in range(retries):
         try:
-            # DİQQƏT: SDK models/ prefiksini bura özü qoyacaq
-            resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            resp = client.models.generate_content(model=current_model, contents=prompt)
             return resp.text
         except Exception as e:
             err_str = str(e)
-            if '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
+            
+            # 404 Xətasında "Self-Healing": Model səhvdirsə, standart modelə məcburi keçid edir
+            if '404' in err_str or 'NOT_FOUND' in err_str:
+                print(f"⚠️ [404 Xətası] '{current_model}' tapılmadı! Təhlükəsiz modelə (gemini-1.5-flash) keçilir...")
+                current_model = 'gemini-1.5-flash'
+                continue # Dərhal yeni model ilə təkrar yoxlayır
+                
+            # 429 Limit xətası
+            elif '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
                 match = re.search(r'retryDelay.*?(\d+(?:\.\d+)?)\s*s', err_str)
                 wait = int(float(match.group(1))) + 5 if match else delay
-                print(f"[Gemini 429] {wait}s gözlənilir... (cəhd {attempt+1}/{retries})")
+                print(f"⏳ [Gemini 429] {wait} saniyə gözlənilir... (Cəhd: {attempt+1})")
                 time.sleep(wait)
                 delay = min(delay * 2, 120)
             else:
-                raise
-    return "⏳ Sistem yüklüdür, kvota dolub. Az sonra yenidən cəhd edin."
+                print(f"Bilinməyən Gemini Xətası: {err_str}")
+                return f"❌ M.Genat xəta ilə qarşılaşdı: {err_str[:50]}..."
+                
+    return "⏳ Sistem həddindən artıq yüklüdür. Lütfən biraz sonra yenidən cəhd edin."
 
 # ═══════════════════════════════════════════════════════════════════════
-#  SERVER & WEBHOOK (Render-in Sağlamlığı Üçün)
+#  SERVER & WEBHOOK
 # ═══════════════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def health():
-    return f"M.Genat 1.3.4 AKTİVDİR. Model: {GEMINI_MODEL}"
+    return f"M.Genat 1.3.5 AKTİVDİR. Mühərrik: {GEMINI_MODEL}"
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -79,16 +89,16 @@ def register_webhook():
     except: return False
 
 # ═══════════════════════════════════════════════════════════════════════
-#  HESABAT VƏ KƏŞFİYYAT
+#  AĞILLI ZAMANLAMA (ADAPTIVE SCOUTING)
 # ═══════════════════════════════════════════════════════════════════════
-def generate_report(report_type: str = "GUNLUK"):
-    with _lock:
-        portfel_str = ", ".join(DINAMIK_PORTFEL)
-    prompt = f"M.Genat 1.3.4. {report_type} strateji hesabat. Aktivlər: {portfel_str}. Dil: Azərbaycan."
-    try:
-        text = gemini_call(prompt)
-        bot.send_message(CHAT_ID, f"🏛️ **{report_type} HESABAT**\n\n{text}", parse_mode="Markdown")
-    except: pass
+def get_scout_interval():
+    """Bakı vaxtına əsasən ABŞ bazarı üçün dinamik axtarış intervalı (saniyə ilə)"""
+    hour = datetime.now().hour
+    if 21 <= hour < 23: return 300       # 5 dəqiqə: FED & Kritik saatlar (Ən Aqressiv)
+    elif 17 <= hour < 21: return 600     # 10 dəqiqə: ABŞ Bazar Açılışı
+    elif 12 <= hour < 17: return 1200    # 20 dəqiqə: Pre-market
+    elif 0 <= hour < 4: return 1800      # 30 dəqiqə: After-hours
+    else: return 7200                    # 2 saat: ABŞ Gecəsi / Durğun vaxt (Yuxu rejimi)
 
 def scout_loop():
     seen_news = deque(maxlen=500)
@@ -96,19 +106,38 @@ def scout_loop():
     while True:
         with _lock:
             keywords = [w.lower() for w in DINAMIK_PORTFEL] + ["fed", "rate", "inflation", "tariff", "crypto"]
+        
+        # Axtarışdan əvvəl statusu yoxlayır
+        interval = get_scout_interval()
+        
         for url in rss_urls:
             try:
                 feed = feedparser.parse(url)
                 for entry in feed.entries[:5]:
                     if entry.title not in seen_news and any(k in entry.title.lower() for k in keywords):
                         seen_news.append(entry.title)
-                        prompt = f"Xəbər: '{entry.title}'. Analiz et. Kritikdirsə '🚨 KRİTİK' yaz."
+                        prompt = f"Xəbər: '{entry.title}'. Analiz et. Kritikdirsə '🚨 KRİTİK' yazaraq cavaba başla."
                         result = gemini_call(prompt)
                         if "🚨 KRİTİK" in result.upper():
                             bot.send_message(CHAT_ID, f"{result}\n\n🔗 {entry.link}", parse_mode="Markdown")
-                        time.sleep(10)
+                        time.sleep(5)
             except: continue
-        time.sleep(600)
+        
+        # Dinamik yuxu rejimi
+        print(f"Scout agent {interval//60} dəqiqəlik gözləməyə keçdi...")
+        time.sleep(interval)
+
+# ═══════════════════════════════════════════════════════════════════════
+#  HESABAT VƏ XATIRLATMA
+# ═══════════════════════════════════════════════════════════════════════
+def generate_report(report_type: str = "GUNLUK"):
+    with _lock:
+        portfel_str = ", ".join(DINAMIK_PORTFEL)
+    prompt = f"M.Genat 1.3.5. {report_type} strateji hesabat. Aktivlər: {portfel_str}. Dil: Azərbaycan."
+    try:
+        text = gemini_call(prompt)
+        bot.send_message(CHAT_ID, f"🏛️ **{report_type} HESABAT**\n\n{text}", parse_mode="Markdown")
+    except: pass
 
 def reminder_loop():
     while True:
@@ -136,16 +165,23 @@ def handle_messages(message):
     msg_lower = text.lower()
     
     if msg_lower.startswith("skan əlavə et:"):
-        yeni = text.split(":", 1)[1].strip().upper()
-        with _lock:
-            if yeni not in DINAMIK_PORTFEL:
-                DINAMIK_PORTFEL.append(yeni)
-                bot.reply_to(message, f"✅ Əlavə edildi: `{yeni}`")
+        parts = text.split(":", 1)
+        if len(parts) == 2:
+            yeni = parts[1].strip().upper()
+            with _lock:
+                if yeni not in DINAMIK_PORTFEL:
+                    DINAMIK_PORTFEL.append(yeni)
+                    bot.reply_to(message, f"✅ Əlavə edildi: `{yeni}`")
     elif msg_lower == "portfel":
         with _lock: bot.reply_to(message, f"📊 Radar: {', '.join(DINAMIK_PORTFEL)}")
+    elif msg_lower.startswith("xatırlat"):
+        parts = text.split(" ", 2)
+        if len(parts) >= 3:
+            with _lock: XATIRLATMALAR.append({"zaman": parts[1], "mesaj": parts[2]})
+            bot.reply_to(message, f"✅ {parts[1]} üçün qeyd edildi.")
     elif msg_lower == "hesabat":
         bot.reply_to(message, "⏳ Analiz aparılır...")
-        threading.Thread(target=generate_report, args=("ANI",), daemon=True).start()
+        threading.Thread(target=generate_report, args=("ANİ",), daemon=True).start()
     else:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
@@ -155,7 +191,7 @@ def handle_messages(message):
             bot.reply_to(message, f"❌ Xəta: {str(e)[:50]}")
 
 if __name__ == '__main__':
-    print(f"M.Genat 1.3.4 işə düşür (Model: {GEMINI_MODEL})")
+    print(f"M.Genat 1.3.5 işə düşür (Model: {GEMINI_MODEL})")
     register_webhook()
     threading.Thread(target=scout_loop, daemon=True).start()
     threading.Thread(target=reminder_loop, daemon=True).start()
