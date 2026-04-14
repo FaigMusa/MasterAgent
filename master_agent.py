@@ -147,7 +147,7 @@ def handle_messages(message):
 # ================= MASTER START =================
 if __name__ == '__main__':
     # 1. Təmizlik
-    bot.remove_webhook(drop_pending_updates=True)
+    bot.delete_webhook(drop_pending_updates=True)
     time.sleep(2)
     
     # 2. RENDER ÜÇÜN VEB SERVERİ İŞƏ SALIRIQ (Bu 404/Port xətasını bloklayır)
