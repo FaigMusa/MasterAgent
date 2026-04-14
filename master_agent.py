@@ -17,10 +17,9 @@ CHAT_ID         = os.getenv('CHAT_ID')
 GEMINI_API_KEY  = os.getenv('GEMINI_API_KEY')
 WEBHOOK_URL     = os.getenv('WEBHOOK_URL', '').rstrip('/')
 
-# 404 Xətasının qarşısını alan qəti model formatı tənzimləməsi
+# API Xətalarının Qarşısını Alan Model Formatı
 raw_model = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash')
 clean_model = str(raw_model).strip().replace('"', '').replace("'", "")
-# Yeni SDK bəzən model adının başında "models/" tələb edir. Yoxdursa, kod özü əlavə edir.
 GEMINI_MODEL = clean_model if clean_model.startswith("models/") else f"models/{clean_model}"
 
 if not GEMINI_API_KEY:
@@ -34,7 +33,7 @@ DINAMIK_PORTFEL = ["ETH", "BTC", "NVDA", "AMD", "SMH", "NLR", "URA", "BOTZ", "TS
 XATIRLATMALAR   = []
 
 # ═══════════════════════════════════════════════════════════════════════
-#  GEMINI — 429-a qarşı retry mexanizmi
+#  GEMINI — 429 Limitlərinə Qarşı Qoruma (Graceful Retry)
 # ═══════════════════════════════════════════════════════════════════════
 def gemini_call(prompt: str, retries: int = 3) -> str:
     delay = 10
@@ -55,13 +54,13 @@ def gemini_call(prompt: str, retries: int = 3) -> str:
     return "⏳ Hazırda sistem çox yüklüdür (Kvota dolub). Lütfən bir az sonra yenidən cəhd edin."
 
 # ═══════════════════════════════════════════════════════════════════════
-#  FLASK — webhook server
+#  FLASK — Webhook & Server (409 və Port Xətalarının Dərmanı)
 # ═══════════════════════════════════════════════════════════════════════
 app = Flask(__name__)
 
 @app.route('/', methods=['GET'])
 def health():
-    return f"M.Genat 1.3.2 - {GEMINI_MODEL} Aktivdir"
+    return f"M.Genat 1.3.3 - {GEMINI_MODEL} Aktivdir"
 
 @app.route(f'/webhook/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -92,14 +91,14 @@ def register_webhook():
         return False
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MİSKROSKOP VƏ TELESKOP ANALİZLƏRİ
+#  STRATEJİ ANALİZ: MİKROSKOP VƏ TELESKOP
 # ═══════════════════════════════════════════════════════════════════════
 def generate_report(report_type: str = "GUNLUK"):
     with _lock:
         portfel_str = ", ".join(DINAMIK_PORTFEL)
     
     prompt = f"""
-    Sən M.Genat 1.3.2-sən. Phill üçün {report_type} strateji maliyyə hesabatı hazırla. 
+    Sən M.Genat 1.3.3-sən. Phill üçün {report_type} strateji maliyyə hesabatı hazırla. 
     Aktivlər: {portfel_str}. 
     Tarix: {datetime.now().strftime('%d %B %Y')}.
     
@@ -155,7 +154,7 @@ def schedule_loop():
         time.sleep(30)
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MESAJ İDARƏETMƏSİ
+#  DİNAMİK YADDAŞ VƏ MESAJ İDARƏETMƏSİ
 # ═══════════════════════════════════════════════════════════════════════
 @bot.message_handler(func=lambda m: True)
 def handle_messages(message):
@@ -163,7 +162,7 @@ def handle_messages(message):
     text = message.text or ""
     msg_lower = text.lower()
 
-    if msg_lower.startswith("skan elave et:"):
+    if msg_lower.startswith("skan əlavə et:"):
         parts = text.split(":", 1)
         if len(parts) == 2:
             yeni = parts[1].strip().upper()
@@ -173,6 +172,7 @@ def handle_messages(message):
                     bot.reply_to(message, f"✅ Radara əlavə edildi: `{yeni}`")
                 else:
                     bot.reply_to(message, f"⚠️ `{yeni}` artıq siyahıdadır.")
+    
     elif msg_lower.startswith("skan sil:"):
         parts = text.split(":", 1)
         if len(parts) == 2:
@@ -183,16 +183,39 @@ def handle_messages(message):
                     bot.reply_to(message, f"🗑️ Silindi: `{sil}`")
                 else:
                     bot.reply_to(message, f"⚠️ `{sil}` tapılmadı.")
-    elif msg_lower == "portfel":
+    
+    elif msg_lower == "portfel" or msg_lower == "skan siyahısı":
         with _lock:
-            bot.reply_to(message, f"📊 **Cari Kəşfiyyat Radarı:**\n{', '.join(DINAMIK_PORTFEL)}")
-    elif msg_lower.startswith("xatirlat"):
+            bot.reply_to(message, f"📡 **Cari Kəşfiyyat Radarı:**\n{', '.join(DINAMIK_PORTFEL)}")
+    
+    elif msg_lower.startswith("xatırlat"):
         parts = text.split(" ", 2)
         if len(parts) >= 3:
             with _lock: XATIRLATMALAR.append({"zaman": parts[1], "mesaj": parts[2]})
             bot.reply_to(message, f"✅ {parts[1]} üçün qeyd edildi.")
         else:
-            bot.reply_to(message, "Format: `xatirlat 20:00 Mesaj metni`")
+            bot.reply_to(message, "⚠️ Format: `xatırlat 20:00 Mesaj metni`")
+    
     elif msg_lower == "hesabat":
         bot.reply_to(message, "⏳ Strateji analiz aparılır...")
-        threading.Thread(target=generate
+        threading.Thread(target=generate_report, args=("ANİ",), daemon=True).start()
+    
+    else:
+        try:
+            bot.send_chat_action(message.chat.id, 'typing')
+            result = gemini_call(f"Sən M.Genat-san. Phill-in sualı: {text}")
+            bot.reply_to(message, result, parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"❌ Xəta: {str(e)[:50]}...")
+
+# ═══════════════════════════════════════════════════════════════════════
+#  MASTER START
+# ═══════════════════════════════════════════════════════════════════════
+if __name__ == '__main__':
+    print(f"M.Genat 1.3.3 işə düşür (Model: {GEMINI_MODEL})")
+    register_webhook()
+    threading.Thread(target=scout_loop, daemon=True).start()
+    threading.Thread(target=reminder_loop, daemon=True).start()
+    threading.Thread(target=schedule_loop, daemon=True).start()
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
