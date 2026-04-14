@@ -20,25 +20,22 @@ GOOGLE_JSON = os.getenv('GOOGLE_JSON')
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-PORTFOLIO = "ETH, NVIDIA (NVDA), AMD, URA (Nüvə), ICLN (Yenilənəbilən), SOXX, SMH"
+# ================= DİNAMİK YADDAŞ (YENİ DNT) =================
+# Sabit portfeli ləğv etdik, artıq bu canlı bir siyahıdır
+DINAMIK_PORTFEL = ["ETH", "BTC", "NVDA", "AMD", "SMH", "NLR", "URA", "BOTZ", "TSLA"]
+XATIRLATMALAR = [] # Saat və mesajları tutacaq yaddaş
 
+# ================= RENDER ÜÇÜN XİLASKAR VEB SERVER =================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "M.Genat 1.2 Mühərriki Aktivdir!"
+    return "M.Genat 1.2 Mühərriki Açıqdır və Port Təsdiqləndi!"
 
-# ================= GOOGLE SHEETS BAZASI =================
-sheet = None
-if GOOGLE_JSON:
-    try:
-        creds_dict = json.loads(GOOGLE_JSON)
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        gc = gspread.authorize(creds)
-        sheet = gc.open("MGenat_Memory").sheet1
-    except Exception as e:
-        print(f"Baza xətası: {e}")
+def run_web_server():
+    port = int(os.environ.get('PORT', 10000))
+    # Flask serveri qurduq ki, Render "Port" xətası verməsin
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ================= SCOUT & REPORT FUNKSİYALARI =================
 def send_tg(text):
@@ -48,13 +45,14 @@ def send_tg(text):
 
 def generate_report(report_type="GÜNLÜK"):
     now = datetime.now().strftime("%d %B %Y")
+    portfel_str = ", ".join(DINAMIK_PORTFEL)
     prompt = f"""
     Sən M.Genat 1.2-sən. Phill üçün {report_type} strateji hesabat hazırla.
-    Sektorlar: 1. Chip (NVDA, AMD) 2. Cloud 3. AI Robotics 4. Energy (URA) 5. Space.
-    Hər sektor üçün qiymət hərəkəti (🟢/🔴). Dil: Azərbaycan.
+    Radardakı Aktivlər: {portfel_str}
+    Sektorlar: 1. Chip (SMH) 2. Energy/Uranium (NLR, URA) 3. Robotics (BOTZ, TSLA) 4. Crypto.
+    Hər sektor üçün bazara ən xırda təsir edən amilləri araşdır, qiymət hərəkəti və strategiya ver.
     """
     try:
-        # Yeni SDK ilə 1.5-flash artıq xətasız və limitsiz işləyəcək
         response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         send_tg(f"🏛️ **{report_type} STRATEJİ HESABAT** ({now})\n\n{response.text}")
     except Exception as e:
@@ -62,8 +60,9 @@ def generate_report(report_type="GÜNLÜK"):
 
 def scout_loop():
     seen_news = set()
-    keywords = ["eth", "ethereum", "fed", "nvidia", "amd", "rate", "crypto", "nasdaq", "ura"]
     while True:
+        # Kəşfiyyat artıq sənin canlı portfelinə əsaslanır
+        keywords = [word.lower() for word in DINAMIK_PORTFEL] + ["fed", "rate", "inflation"]
         for url in [
             "https://finance.yahoo.com/news/rssindex",
             "http://feeds.marketwatch.com/marketwatch/topstories/"
@@ -74,21 +73,28 @@ def scout_loop():
                     title_lower = entry.title.lower()
                     if entry.title not in seen_news and any(k in title_lower for k in keywords):
                         seen_news.add(entry.title)
-                        prompt = f"Xəbər: '{entry.title}'. Portfel: {PORTFOLIO}. Əgər ciddi təsiri varsa, '🚨 TƏCİLİ:' yazaraq analiz et."
+                        portfel_str = ", ".join(DINAMIK_PORTFEL)
+                        prompt = f"Xəbər: '{entry.title}'. Radardakı portfel: {portfel_str}. Bu xəbərin radardakı aktivlərə gizli və ya birbaşa təsiri varsa, '🚨 KRİTİK:' yazaraq qısa izah et."
                         
                         try:
-                            # Model 1.5-flash
                             response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-                            if "🚨 TƏCİLİ" in response.text:
+                            if "🚨 KRİTİK" in response.text.upper():
                                 send_tg(f"{response.text}\n\n🔗 {entry.link}")
-                            
-                            # RADARA DÜŞMƏMƏK ÜÇÜN 5 SANİYƏ SOYUTMA!
-                            time.sleep(5) 
-                        except Exception as e:
-                            print(f"Scout API xətası: {e}")
-                            time.sleep(10) # Xəta olsa 10 saniyə gözlə
+                            time.sleep(5) # Rate limit qorunması
+                        except:
+                            time.sleep(10)
             except: continue
-        time.sleep(600) # 10 dəqiqədən bir axtarışa çıx
+        time.sleep(600)
+
+def reminder_loop():
+    """Hər 60 saniyədən bir saatı yoxlayan Ağıllı Xatırlatma mühərriki"""
+    while True:
+        now_time = datetime.now().strftime("%H:%M")
+        for xatirlatma in XATIRLATMALAR[:]: # Siyahının kopyası üzərində gəzirik
+            if xatirlatma["zaman"] == now_time:
+                send_tg(f"⏰ **PHİLL ÜÇÜN XATIRLATMA:**\n\n🎯 {xatirlatma['mesaj']}")
+                XATIRLATMALAR.remove(xatirlatma) # Mesajı göndərdikdən sonra silir
+        time.sleep(60)
 
 def run_scheduler():
     schedule.every().day.at("08:00").do(generate_report, report_type="SƏHƏR AÇILIŞI")
@@ -104,59 +110,55 @@ def handle_messages(message):
     
     msg = message.text.lower()
 
-    if msg.startswith("insert task"):
-        task = message.text[11:].strip()
-        if sheet:
-            now = datetime.now().strftime("%d-%m-%Y")
-            sheet.append_row([now, task, "Gözləyir ⏳"])
-            bot.reply_to(message, f"✅ Yaddaşa yazıldı: {task}")
+    # --- 1. DİNAMİK PORTFEL RADARI ---
+    if msg.startswith("skan əlavə et:"):
+        yeni_aktiv = message.text.split(":")[1].strip().upper()
+        if yeni_aktiv and yeni_aktiv not in DINAMIK_PORTFEL:
+            DINAMIK_PORTFEL.append(yeni_aktiv)
+            bot.reply_to(message, f"🎯 Radara uğurla əlavə edildi: **{yeni_aktiv}**\nMövcud Radar: {', '.join(DINAMIK_PORTFEL)}")
+        return
+        
+    elif msg == "skan siyahısı":
+        bot.reply_to(message, f"📡 **Hazırkı Kəşfiyyat Radarı:**\n{', '.join(DINAMIK_PORTFEL)}")
         return
 
-    elif msg.startswith("done"):
-        task_name = message.text[4:].strip().lower()
-        if sheet:
-            rows = sheet.get_all_values()
-            for i, row in enumerate(rows):
-                if task_name in row[1].lower():
-                    sheet.update_cell(i+1, 3, "Həll edildi ✅")
-                    bot.reply_to(message, f"🎯 Təbriklər, Phill! '{row[1]}' tamamlandı.")
-                    return
-            bot.reply_to(message, "Belə bir tapşırıq tapılmadı.")
+    # --- 2. AĞILLI XATIRLATMA ---
+    elif msg.startswith("xatırlat"):
+        try:
+            hisseler = message.text.split(" ", 2)
+            zaman = hisseler[1] # "20:00"
+            tapsiriq = hisseler[2] # "Futbolum var"
+            XATIRLATMALAR.append({"zaman": zaman, "mesaj": tapsiriq})
+            bot.reply_to(message, f"✅ Qəbul edildi, Phill. Saat {zaman} olanda sənə xəbər edəcəm.")
+        except:
+            bot.reply_to(message, "⚠️ Səhv format. Zəhmət olmasa belə yaz: `xatırlat 20:00 Futbolum var`")
         return
 
-    elif msg in ["daily", "weekly", "monthly"]:
-        if sheet:
-            rows = sheet.get_all_values()
-            if len(rows) <= 1:
-                bot.reply_to(message, "Siyahı boşdur.")
-                return
-            reply = f"📅 **M.Genat 1.2 - Tapşırıqlar:**\n\n"
-            for row in rows[1:]:
-                reply += f"🔹 {row[1]} [{row[2]}] ({row[0]})\n"
-            bot.reply_to(message, reply)
-        return
-
+    # --- 3. DİGƏR KOMANDALAR VƏ GEMINI ---
     else:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
-            prompt = f"Sən M.Genat 1.2-sən. Sual: {message.text}"
+            prompt = f"Sən M.Genat 1.2-sən. Phill sənə yazır: {message.text}"
             response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
             bot.reply_to(message, response.text, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"❌ Xəta (Ola bilsin limit dolub, 1 dəqiqə gözlə): {str(e)}")
+            bot.reply_to(message, f"❌ Xəta: {str(e)}")
 
 # ================= MASTER START =================
 if __name__ == '__main__':
-    # Botun köhnə bağlantılarını (Webhook və ya Polling) təmizləyirik
-    print("Bağlantılar təmizlənir...")
-    bot.remove_webhook()
-    time.sleep(1) # Qısa fasilə veririk
+    # 1. Təmizlik
+    bot.remove_webhook(drop_pending_updates=True)
+    time.sleep(2)
     
-    # Arxa plan modullarını işə salırıq
+    # 2. RENDER ÜÇÜN VEB SERVERİ İŞƏ SALIRIQ (Bu 404/Port xətasını bloklayır)
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # 3. Kəşfiyyat və Xatırlatma mühərriklərini işə salırıq
     threading.Thread(target=scout_loop, daemon=True).start()
     threading.Thread(target=run_scheduler, daemon=True).start()
+    threading.Thread(target=reminder_loop, daemon=True).start() # Yeni Xatırlatma mühərriki
     
-    # Botun dinləmə rejimi (Polling)
-    # interval=2 əlavə edərək serveri yormuruq
-    print("M.Genat 1.2 aktivləşdirilir...")
+    print("M.Genat 1.2.1 aktivdir!")
+    
+    # 4. Telegram botun dinləmə rejimi (Sonda gəlməlidir)
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
