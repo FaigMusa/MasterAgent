@@ -92,13 +92,13 @@ def register_webhook():
 #  AĞILLI ZAMANLAMA (ADAPTIVE SCOUTING)
 # ═══════════════════════════════════════════════════════════════════════
 def get_scout_interval():
-    """Bakı vaxtına əsasən ABŞ bazarı üçün dinamik axtarış intervalı (saniyə ilə)"""
+    """Bakı vaxtına əsasən ABŞ bazarı üçün dinamik axtarış intervalı (Kvota qorunması üçün uzadıldı)"""
     hour = datetime.now().hour
-    if 21 <= hour < 23: return 300       # 5 dəqiqə: FED & Kritik saatlar (Ən Aqressiv)
-    elif 17 <= hour < 21: return 600     # 10 dəqiqə: ABŞ Bazar Açılışı
-    elif 12 <= hour < 17: return 1200    # 20 dəqiqə: Pre-market
-    elif 0 <= hour < 4: return 1800      # 30 dəqiqə: After-hours
-    else: return 7200                    # 2 saat: ABŞ Gecəsi / Durğun vaxt (Yuxu rejimi)
+    if 21 <= hour < 23: return 600       # 10 dəqiqə: FED & Kritik saatlar
+    elif 17 <= hour < 21: return 1200    # 20 dəqiqə: ABŞ Bazar Açılışı
+    elif 12 <= hour < 17: return 1800    # 30 dəqiqə: Pre-market
+    elif 0 <= hour < 4: return 3600      # 1 saat: After-hours
+    else: return 7200                    # 2 saat: ABŞ Gecəsi / Durğun vaxt
 
 def scout_loop():
     seen_news = deque(maxlen=500)
@@ -120,7 +120,7 @@ def scout_loop():
                         result = gemini_call(prompt)
                         if "🚨 KRİTİK" in result.upper():
                             bot.send_message(CHAT_ID, f"{result}\n\n🔗 {entry.link}", parse_mode="Markdown")
-                        time.sleep(5)
+                        time.sleep(20) # 5 saniyədən 20 saniyəyə qaldırıldı ki, kvota dolmasın
             except: continue
         
         # Dinamik yuxu rejimi
@@ -160,7 +160,10 @@ def schedule_loop():
 # ═══════════════════════════════════════════════════════════════════════
 @bot.message_handler(func=lambda m: True)
 def handle_messages(message):
-    if str(message.chat.id) != str(CHAT_ID): return
+    print(f"Gələn Mesaj ID: {message.chat.id}")
+    if str(message.chat.id) != str(CHAT_ID): 
+        print("XƏBƏRDARLIQ: CHAT_ID uyğun gəlmir, mesaj bloklandı.")
+        return
     text = message.text or ""
     msg_lower = text.lower()
     
