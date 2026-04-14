@@ -18,7 +18,9 @@ GEMINI_API_KEY  = os.getenv('GEMINI_API_KEY')
 WEBHOOK_URL     = os.getenv('WEBHOOK_URL', '').rstrip('/')
 
 # Render-dəki Environment Variable-dan oxuyur, yoxdursa flash-1.5-ə keçir
-GEMINI_MODEL    = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash')
+# Koddakı GEMINI_MODEL tərifini bu cür yenilə:
+RAW_MODEL = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash').strip()
+GEMINI_MODEL = f"models/{RAW_MODEL}" if not RAW_MODEL.startswith("models/") else RAW_MODEL
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot    = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
