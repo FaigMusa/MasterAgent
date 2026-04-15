@@ -156,17 +156,25 @@ def schedule_loop():
         time.sleep(30)
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MESAJLAR
-# ═══════════════════════════════════════════════════════════════════════
+# ================= MESAJLAR =================
 @bot.message_handler(func=lambda m: True)
 def handle_messages(message):
-    print(f"Gələn Mesaj ID: {message.chat.id}")
-    if str(message.chat.id) != str(CHAT_ID): 
-        print("XƏBƏRDARLIQ: CHAT_ID uyğun gəlmir, mesaj bloklandı.")
+    # Loglarda görmək üçün (PYTHONUNBUFFERED sayəsində canlı görünəcək)
+    print(f"DEBUG: Mesaj gəldi! ID: {message.chat.id}, Mətn: {message.text}")
+    
+    if str(message.chat.id) != str(CHAT_ID):
+        print(f"⚠️ Kənar giriş cəhdi: {message.chat.id}")
         return
+
     text = message.text or ""
     msg_lower = text.lower()
     
+    # 1. TEST KOMANDASI
+    if msg_lower == "test":
+        bot.reply_to(message, "🚀 Bağlantı MÜKƏMMƏLDİR! Mühərrik səni eşidir.")
+        return
+
+    # 2. SKAN ƏLAVƏ ET
     if msg_lower.startswith("skan əlavə et:"):
         parts = text.split(":", 1)
         if len(parts) == 2:
@@ -174,30 +182,41 @@ def handle_messages(message):
             with _lock:
                 if yeni not in DINAMIK_PORTFEL:
                     DINAMIK_PORTFEL.append(yeni)
-                    bot.reply_to(message, f"✅ Əlavə edildi: `{yeni}`")
+                    bot.reply_to(message, f"✅ Radara əlavə edildi: `{yeni}`")
+                else:
+                    bot.reply_to(message, f"⚠️ `{yeni}` artıq siyahıdadır.")
+        return # İş bitdi, funksiyadan çıx
+
+    # 3. PORTFEL
     elif msg_lower == "portfel":
-        with _lock: bot.reply_to(message, f"📊 Radar: {', '.join(DINAMIK_PORTFEL)}")
-    elif msg_lower.startswith("xatırlat"):
+        with _lock:
+            siyahi = ", ".join(DINAMIK_PORTFEL)
+            bot.reply_to(message, f"📊 Cari Radar: {siyahi}")
+        return
+
+    # 4. XATIRLATMA
+    elif msg_lower.startswith("xatırlat") or msg_lower.startswith("xatirlat"):
         parts = text.split(" ", 2)
         if len(parts) >= 3:
-            with _lock: XATIRLATMALAR.append({"zaman": parts[1], "mesaj": parts[2]})
-            bot.reply_to(message, f"✅ {parts[1]} üçün qeyd edildi.")
+            with _lock:
+                XATIRLATMALAR.append({"zaman": parts[1], "mesaj": parts[2]})
+            bot.reply_to(message, f"✅ Saat {parts[1]} üçün qeyd edildi.")
+        else:
+            bot.reply_to(message, "Format: `xatırlat 20:00 Mesaj`")
+        return
+
+    # 5. HESABAT
     elif msg_lower == "hesabat":
-        bot.reply_to(message, "⏳ Analiz aparılır...")
+        bot.reply_to(message, "⏳ Analiz aparılır... Zəhmət olmasa gözləyin.")
         threading.Thread(target=generate_report, args=("ANİ",), daemon=True).start()
+        return
+
+    # 6. ÜMUMİ SÖHBƏT (GEMINI) - Heç bir komandaya uyğun gəlməzsə
     else:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
+            # Gemini-yə sorğu göndəririk
             result = gemini_call(f"Sən M.Genat-san. Phill-in sualı: {text}")
             bot.reply_to(message, result, parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"❌ Xəta: {str(e)[:50]}")
-
-if __name__ == '__main__':
-    print(f"M.Genat 1.3.5 işə düşür (Model: {GEMINI_MODEL})")
-    register_webhook()
-    threading.Thread(target=scout_loop, daemon=True).start()
-    threading.Thread(target=reminder_loop, daemon=True).start()
-    threading.Thread(target=schedule_loop, daemon=True).start()
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, use_reloader=False)
