@@ -151,15 +151,19 @@ def handle_messages(message):
         threading.Thread(target=generate_report, args=("ANİ",), daemon=True).start()
         return
 
-    # 5. ÜMUMİ SÖHBƏT (GEMINI ANALİZİ)
+   # 5. ÜMUMİ SÖHBƏT (GEMINI ANALİZİ)
     else:
-        try:
-            bot.send_chat_action(message.chat.id, 'typing')
-            # Burada artıq Gemini-ni çağırırıq
-            result = gemini_call(f"Sən M.Genat-san. Phill yazır: {text}")
-            bot.reply_to(message, result, parse_mode="Markdown")
-        except Exception as e:
-            bot.reply_to(message, f"⚠️ Mühərrik hazırda məşğuldur. Lütfən biraz sonra yoxlayın.")
+        # Funksiyanın daxilində kiçik bir "arxa plan" işçisi yaradırıq
+        def gemini_arxa_plan():
+            try:
+                bot.send_chat_action(message.chat.id, 'typing')
+                result = gemini_call(f"Sən M.Genat-san. Phill yazır: {text}")
+                bot.reply_to(message, result, parse_mode="Markdown")
+            except Exception as e:
+                bot.reply_to(message, f"⚠️ Mühərrik hazırda məşğuldur. Lütfən biraz sonra yoxlayın.")
+        
+        # Mesajı dərhal bu işçiyə veririk ki, Telegram donmasın
+        threading.Thread(target=gemini_arxa_plan, daemon=True).start()
 # ═══════════════════════════════════════════════════════════════════════
 #  START
 # ═══════════════════════════════════════════════════════════════════════
