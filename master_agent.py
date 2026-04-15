@@ -110,36 +110,56 @@ def schedule_loop():
         time.sleep(30)
 
 # ═══════════════════════════════════════════════════════════════════════
-#  MESAJ İDARƏETMƏSİ
-# ═══════════════════════════════════════════════════════════════════════
+# ================= MESAJ İDARƏETMƏSİ (FİNAL VERSİYA) =================
 @bot.message_handler(func=lambda m: True)
 def handle_messages(message):
-    print(f"DEBUG: Mesaj gəldi! ID: {message.chat.id}, Text: {message.text}")
-    if str(message.chat.id) != str(CHAT_ID): return
+    if str(message.chat.id) != str(CHAT_ID):
+        return
 
     text = message.text or ""
     msg_l = text.lower()
 
+    # 1. TEST KOMANDASI
     if msg_l == "test":
-        bot.reply_to(message, "🚀 Bağlantı MÜKƏMMƏLDİR!")
+        bot.reply_to(message, "🚀 Bağlantı MÜKƏMMƏLDİR! Mühərrik tam gücü ilə xidmətindədir.")
+        return
+
+    # 2. SKAN ƏLAVƏ ET
     elif msg_l.startswith("skan əlavə et:"):
-        yeni = text.split(":", 1)[1].strip().upper()
-        with _lock:
-            if yeni not in DINAMIK_PORTFEL: DINAMIK_PORTFEL.append(yeni)
-        bot.reply_to(message, f"✅ Əlavə edildi: {yeni}")
+        try:
+            yeni = text.split(":", 1)[1].strip().upper()
+            with _lock:
+                if yeni not in DINAMIK_PORTFEL:
+                    DINAMIK_PORTFEL.append(yeni)
+                    bot.reply_to(message, f"✅ `{yeni}` radara əlavə edildi.")
+                else:
+                    bot.reply_to(message, f"⚠️ `{yeni}` artıq siyahıdadır.")
+        except:
+            bot.reply_to(message, "Format: `skan əlavə et: BTC`")
+        return
+
+    # 3. PORTFEL
     elif msg_l == "portfel":
-        with _lock: bot.reply_to(message, f"📊 Radar: {', '.join(DINAMIK_PORTFEL)}")
+        with _lock:
+            siyahi = ", ".join(DINAMIK_PORTFEL)
+            bot.reply_to(message, f"📊 **Cari Radar:**\n`{siyahi}`")
+        return
+
+    # 4. HESABAT (ƏL İLƏ)
     elif msg_l == "hesabat":
-        bot.reply_to(message, "⏳ Analiz aparılır...")
+        bot.reply_to(message, "⏳ Analiz aparılır... Zəhmət olmasa 10-15 saniyə gözləyin.")
         threading.Thread(target=generate_report, args=("ANİ",), daemon=True).start()
+        return
+
+    # 5. ÜMUMİ SÖHBƏT (GEMINI ANALİZİ)
     else:
         try:
             bot.send_chat_action(message.chat.id, 'typing')
-            res = gemini_call(f"Sən M.Genat-san. Phill yazır: {text}")
-            bot.reply_to(message, res, parse_mode="Markdown")
+            # Burada artıq Gemini-ni çağırırıq
+            result = gemini_call(f"Sən M.Genat-san. Phill yazır: {text}")
+            bot.reply_to(message, result, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"❌ Xəta: {str(e)[:30]}")
-
+            bot.reply_to(message, f"⚠️ Mühərrik hazırda məşğuldur. Lütfən biraz sonra yoxlayın.")
 # ═══════════════════════════════════════════════════════════════════════
 #  START
 # ═══════════════════════════════════════════════════════════════════════
