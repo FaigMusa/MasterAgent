@@ -91,9 +91,9 @@ def scout_loop():
                     result = gemini_call(f"Xəbər: '{entry.title}'. Kritikdirsə '🚨 KRİTİK' yazaraq analiz et.")
                     if "🚨 KRİTİK" in result.upper():
                         bot.send_message(CHAT_ID, f"{result}\n\n🔗 {entry.link}", parse_mode="Markdown")
-                    time.sleep(20)
+                    time.sleep(60)
         except: pass
-        time.sleep(1200)
+        time.sleep(3600)
 
 def generate_report(report_type="GUNLUK"):
     with _lock:
