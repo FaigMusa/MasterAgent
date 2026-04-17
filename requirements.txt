@@ -1,12 +1,10 @@
 google-genai
 pyTelegramBotAPI
-gspread
-google-auth
-feedparser
 requests
-Flask
+flask
 schedule
+feedparser
+yfinance==0.2.54
+pandas==2.2.2
+pandas-ta==0.3.14b0
 gunicorn
-yfinance
-pandas
-pandas_ta
