@@ -7,3 +7,6 @@ requests
 Flask
 schedule
 gunicorn
+yfinance
+pandas
+pandas_ta
