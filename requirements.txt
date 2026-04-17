@@ -6,5 +6,5 @@ schedule
 feedparser
 yfinance
 pandas
-pandas-ta
+ta
 gunicorn
