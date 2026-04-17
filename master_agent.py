@@ -27,8 +27,17 @@ bot    = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 _lock  = threading.Lock()
 
 # ─────────────────────────── RADARLAR (İzlənilən Aktivlər) ────────────────────
-DINAMIK_PORTFEL = ["ETHUSDT", "BTCUSDT"] # Kripto mütləq USDT ilə bitməlidir
-STRATEJI_PORTFEL= ["SPY", "CCJ"]         # Səhmlər (S&P 500 və Uran)
+def get_env_list(var_name, default_values):
+    """Environment variable-dan vergüllə ayrılmış siyahını oxuyur."""
+    raw_val = os.getenv(var_name)
+    if not raw_val:
+        return default_values
+    # Boşluqları təmizləyir və siyahıya çevirir
+    return [x.strip().upper() for x in raw_val.split(',')]
+
+# Əgər Env Var tapılmasa, mötərizədəki default-lar aktiv olacaq
+DINAMIK_PORTFEL = get_env_list('DINAMIK_PORTFEL', ["BTCUSDT", "ETHUSDT"])
+STRATEJI_PORTFEL = get_env_list('STRATEJI_PORTFEL', ["SPY", "GC=F"])
 
 # ═══════════════════════════════════════════════════════════════════════
 #  GEMINI CALL (Analiz Mühərriki)
