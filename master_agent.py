@@ -142,8 +142,7 @@ def gemini_call(prompt: str,
                 wait *= 2
             continue
 
-    return ("⏳ Gemini API-si ardıcıl 3 cəhddən sonra cavab vermədi. "
-            "Kvota dolmuş ola bilər, bir neçə dəqiqə sonra yenidən cəhd edin.")
+    return f"🚨 GİZLİ XƏTA AŞKARLANDI: {str(exc)}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
