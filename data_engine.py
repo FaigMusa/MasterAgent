@@ -83,8 +83,8 @@ BIG_FISH_KEYWORDS: dict[str, int] = {
     "bitcoin etf": 3, "spot etf": 3, "crypto": 1, "sec": 2,
 }
 
-MASTER_CRYPTO_COUNT = 6
-MASTER_MACRO_COUNT  = 8
+MASTER_CRYPTO_COUNT = 3
+MASTER_MACRO_COUNT  = 4
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -623,7 +623,7 @@ def build_gemini_prompt(context: dict) -> str:
                 quality.get("macro_news_ok")]):
         raise ValueError("Bütün data mənbələri uğursuz. Boş prompt göndərilmir.")
 
-    json_block = json.dumps(context, ensure_ascii=False, indent=2)
+    json_block = json.dumps(context, ensure_ascii=False) # indent=2 silindi
 
     # Xəbərdarlıq bloku
     warns = []
