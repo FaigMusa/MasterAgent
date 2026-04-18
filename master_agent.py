@@ -1,4 +1,3 @@
-# M.Genat 3.1 Pro — Master Agent
 import logging
 import os
 import threading
@@ -9,7 +8,6 @@ import telebot
 from flask import Flask, request as flask_request
 from google import genai
 from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
-
 import data_engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -58,10 +56,10 @@ def gemini_call(prompt, retries=2):
             if "429" in err or "quota" in err or "exhausted" in err: 
                 time.sleep(5)
             elif "api_key" in err or "400" in err or "403" in err: 
-                return "❌ API açarı xətası. Lütfən açarı yoxlayın."
+                return "❌ API açarı xətası."
             else: 
                 time.sleep(5)
-    return "⏳ API hazırda məşğuldur. Zəhmət olmasa bir neçə saniyə sonra yenidən cəhd edin."
+    return "⏳ Gemini API cavab vermir. Daha sonra cəhd edin."
 
 @app.route("/", methods=["GET"])
 def health(): return "M.Genat 3.1 Pro Live"
@@ -72,22 +70,16 @@ def webhook():
     bot.process_new_updates([update])
     return "ok", 200
 
-def generate_report(report_type="ANİ ANALİZ"):
+def generate_report(report_type="ANİ ANALİZ", chat_id=CHAT_ID):
     try:
         with _lock: symbols = DINAMIK_PORTFEL + STRATEJI_PORTFEL
-        
-        # ⚠️ FIX: CLAUDE-UN YENİ DATA_ENGINE KODUNA UYĞUN ÇAĞIRIŞ
-        data_dict = data_engine.aggregate_context(
-            symbols=symbols, 
-            cryptopanic_token=CRYPTOPANIC_KEY
-        )
+        data_dict = data_engine.aggregate_context(symbols=symbols, cryptopanic_token=CRYPTOPANIC_KEY)
         prompt = data_engine.build_gemini_prompt(context=data_dict)
         analiz = gemini_call(prompt)
-        
-        safe_send(CHAT_ID, f"🏛️ {report_type} (M.Genat 3.1 Pro)\n\n{analiz}")
+        safe_send(chat_id, f"🏛️ {report_type} (M.Genat 3.1 Pro)\n\n{analiz}")
     except Exception as e:
         log.error(f"Hesabat xətası: {e}")
-        safe_send(CHAT_ID, f"⚠️ Məlumat toplanarkən xəta baş verdi: {str(e)[:300]}")
+        safe_send(chat_id, f"⚠️ Məlumat toplanarkən xəta: {str(e)[:250]}")
 
 def schedule_loop():
     schedule.every().day.at("08:00").do(generate_report, report_type="SƏHƏR HESABATI")
@@ -103,58 +95,75 @@ def main_menu():
     m.row(InlineKeyboardButton("📊 Dərin Analiz (Anlıq)", callback_data="run_report"))
     return m
 
-@bot.message_handler(commands=["menu", "start", "radar"])
-def send_menu(message):
-    if str(message.chat.id) != str(CHAT_ID): return
-    bot.send_message(message.chat.id, "🎛 M.Genat 3.1 Pro Paneli", reply_markup=main_menu())
-
 @bot.callback_query_handler(func=lambda call: True)
 def handle_query(call):
     if str(call.message.chat.id) != str(CHAT_ID): return
+    
     if call.data == "show_crypto":
-        safe_send(call.message.chat.id, f"🔭 Kripto (Scout): {', '.join(DINAMIK_PORTFEL)}\nƏlavə: skan əlavə et: SOLUSDT\nSil: skan sil: ETHUSDT")
+        safe_send(call.message.chat.id, f"🔭 Kripto: {', '.join(DINAMIK_PORTFEL)}")
     elif call.data == "show_stocks":
-        safe_send(call.message.chat.id, f"🏛️ Səhm (Master): {', '.join(STRATEJI_PORTFEL)}\nƏlavə: strat əlavə et: NVDA\nSil: strat sil: SPY")
+        safe_send(call.message.chat.id, f"🏛️ Səhm: {', '.join(STRATEJI_PORTFEL)}")
     elif call.data == "run_report":
-        safe_send(call.message.chat.id, "⏳ Scout və Master Agentlər dataları toplayır... (15-20 saniyə)")
-        threading.Thread(target=generate_report, daemon=True).start()
+        safe_send(call.message.chat.id, "⏳ Məlumatlar toplanır... (15-20 saniyə)")
+        threading.Thread(target=generate_report, args=("ANİ ANALİZ", call.message.chat.id), daemon=True).start()
+    
     try: bot.answer_callback_query(call.id)
     except: pass
 
+# DÜZƏLİŞ: BÜTÜN MESAJLARI VƏ KOMANDALARI TƏK BİR BLOKDA İDARƏ EDİRİK
 @bot.message_handler(func=lambda m: True)
 def handle_messages(message):
     if str(message.chat.id) != str(CHAT_ID): return
+    
     text = message.text.strip()
     msg_l = text.lower()
 
+    # 1. Menyu Komandaları
+    if msg_l in ("/start", "/menu", "radar"):
+        bot.send_message(message.chat.id, "🎛 M.Genat 3.1 Pro Paneli", reply_markup=main_menu())
+        return
+
+    # 2. Analiz Əmri
     if msg_l == "analiz":
-        safe_reply(message, "⏳ Scout və Master Agentlər dataları toplayır... (15-20 saniyə)")
-        threading.Thread(target=generate_report, daemon=True).start()
-    elif msg_l.startswith("skan əlavə et:"):
+        safe_reply(message, "⏳ Məlumatlar toplanır... (15-20 saniyə)")
+        threading.Thread(target=generate_report, args=("ANİ ANALİZ", message.chat.id), daemon=True).start()
+        return
+
+    # 3. Radar İdarəetməsi
+    if msg_l.startswith("skan əlavə et:"):
         yeni = text.split(":", 1)[1].strip().upper()
         with _lock:
             if yeni not in DINAMIK_PORTFEL: DINAMIK_PORTFEL.append(yeni)
-        safe_reply(message, f"✅ Scout Radarına əlavə edildi: {yeni}")
-    elif msg_l.startswith("skan sil:"):
+        safe_reply(message, f"✅ Kripto Radara əlavə edildi: {yeni}")
+        return
+
+    if msg_l.startswith("skan sil:"):
         sil = text.split(":", 1)[1].strip().upper()
         with _lock:
             if sil in DINAMIK_PORTFEL: DINAMIK_PORTFEL.remove(sil)
-        safe_reply(message, f"🗑️ Scout Radarından silindi: {sil}")
-    elif msg_l.startswith("strat əlavə et:"):
+        safe_reply(message, f"🗑️ Kripto Radarından silindi: {sil}")
+        return
+
+    if msg_l.startswith("strat əlavə et:"):
         yeni = text.split(":", 1)[1].strip().upper()
         with _lock:
             if yeni not in STRATEJI_PORTFEL: STRATEJI_PORTFEL.append(yeni)
-        safe_reply(message, f"🏛️ Master Radarına əlavə edildi: {yeni}")
-    elif msg_l.startswith("strat sil:"):
+        safe_reply(message, f"🏛️ Səhm Radarına əlavə edildi: {yeni}")
+        return
+
+    if msg_l.startswith("strat sil:"):
         sil = text.split(":", 1)[1].strip().upper()
         with _lock:
             if sil in STRATEJI_PORTFEL: STRATEJI_PORTFEL.remove(sil)
-        safe_reply(message, f"🗑️ Master Radarından silindi: {sil}")
-    else:
-        def _bg():
-            res = gemini_call(f"Sən M.Genat 3.1 Pro-san. Phill yazır: {text}")
-            safe_reply(message, res)
-        threading.Thread(target=_bg, daemon=True).start()
+        safe_reply(message, f"🗑️ Səhm Radarından silindi: {sil}")
+        return
+
+    # 4. Əgər yuxarıdakıların heç biridirsə, Gemini-yə göndər (Sərbəst Söhbət)
+    def _bg():
+        res = gemini_call(f"Sən M.Genat 3.1 Pro-san. Phill sənə yazır: {text}")
+        safe_reply(message, res)
+    
+    threading.Thread(target=_bg, daemon=True).start()
 
 if __name__ == '__main__':
     print("M.Genat 3.1 Pro işə düşür...")
