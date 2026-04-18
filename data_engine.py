@@ -1,15 +1,12 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║              M.Genat 3.1 Pro  —  data_engine.py                            ║
+║           M.Genat 3.1 Pro  ·  data_engine.py                               ║
 ║                                                                              ║
-║  ┌─────────────────────────────────────────────────────────────────────┐    ║
-║  │  SCOUT AGENT   │  Day-trading · Multi-TF · RSI · EMA · Vol Spike   │    ║
-║  │  MASTER AGENT  │  Macro · Geopolitical · Institutional Flow         │    ║
-║  │  AGGREGATOR    │  aggregate_context()  →  build_gemini_prompt()     │    ║
-║  └─────────────────────────────────────────────────────────────────────┘    ║
+║   SCOUT  →  Binance / yfinance · 4 TF · RSI · EMA · Volume Spike           ║
+║   MASTER →  CryptoPanic · RSS (Yahoo/CNBC/Reuters…) · Big-Fish filter      ║
+║   ENGINE →  aggregate_context()  ·  build_gemini_prompt()                  ║
 ║                                                                              ║
-║  Kitabxanalar:  requests · yfinance · ta · pandas · feedparser              ║
-║  Python 3.11+  |  Uydurma data qəti yoxdur  |  Thread-pool parallelism     ║
+║   Python 3.11+  ·  pip install requests yfinance ta pandas feedparser      ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -19,100 +16,85 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
-from dataclasses import dataclass, field, asdict
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+    TimeoutError as FuturesTimeout,
+)
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import feedparser
 import pandas as pd
 import requests
-import ta                    # TA-Lib wrapper (pip install ta) — pandas-ta DEYİL
+import ta
 import yfinance as yf
 
 # ──────────────────────────────────────────────────────────────────────────────
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s",
-    datefmt="%H:%M:%S",
-)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GLOBAL SABİTLƏR
+#  SABITLƏR
 # ══════════════════════════════════════════════════════════════════════════════
 
-BINANCE_BASE      = "https://api.binance.com"
-CRYPTOPANIC_BASE  = "https://cryptopanic.com/api/v1"
-HTTP_TIMEOUT      = 12          # saniyə
-THREAD_TIMEOUT    = 25          # futures üçün maksimum gözləmə
+BINANCE_BASE     = "https://api.binance.com"
+CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1"
+HTTP_TIMEOUT     = 12
+THREAD_TIMEOUT   = 30
 
-# Scout — zaman dilimləri  {display_label: (binance_interval, yf_interval, yf_period)}
+# Scout — {label: (binance_iv, yf_iv, yf_period)}
 SCOUT_TIMEFRAMES: dict[str, tuple[str, str, str]] = {
-    "5m":  ("5m",  "5m",  "1d"),
-    "1h":  ("1h",  "60m", "5d"),
-    "4h":  ("4h",  "1h",  "5d"),   # yfinance 4h yoxdur → 1h çəkib resample edirik
-    "1d":  ("1d",  "1d",  "60d"),
+    "5m": ("5m",  "5m",  "1d"),
+    "1h": ("1h",  "60m", "5d"),
+    "4h": ("4h",  "1h",  "5d"),   # yfinance 4h yoxdur → 1h → resample
+    "1d": ("1d",  "1d",  "60d"),
 }
-SCOUT_KLINE_LIMIT    = 210       # EMA-200 üçün ən azı 200 şam lazımdır
-LIQUIDITY_MULTIPLIER = 1.5       # həcm bu qədər artarsa → Spike
-VOLUME_LOOKBACK      = 24        # neçə şamın ortalaması alınır
+KLINE_LIMIT          = 210   # EMA-200 üçün
+LIQUIDITY_MULTIPLIER = 1.5
+VOLUME_LOOKBACK      = 24
 
-# Master — xəbər mənbələri
 MASTER_RSS_FEEDS = [
-    ("Yahoo Finance · Markets",
-     "https://finance.yahoo.com/news/rssindex"),
-    ("CNBC · Finance",
-     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"),
-    ("Reuters · Business",
-     "https://feeds.reuters.com/reuters/businessNews"),
-    ("Bloomberg · Markets",
-     "https://feeds.bloomberg.com/markets/news.rss"),
-    ("MarketWatch · Top Stories",
-     "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
-    ("Investing.com · News",
-     "https://www.investing.com/rss/news.rss"),
-    ("FT · Markets",
-     "https://www.ft.com/rss/markets"),
+    ("Yahoo Finance",   "https://finance.yahoo.com/news/rssindex"),
+    ("CNBC Finance",    "https://search.cnbc.com/rs/search/combinedcms/view.xml"
+                        "?partnerId=wrss01&id=10000664"),
+    ("Reuters Biz",     "https://feeds.reuters.com/reuters/businessNews"),
+    ("MarketWatch",     "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("Investing.com",   "https://www.investing.com/rss/news.rss"),
+    ("FT Markets",      "https://www.ft.com/rss/markets"),
 ]
 
-# Master — "Böyük Balıq" açar sözləri (score hesablanır)
 BIG_FISH_KEYWORDS: dict[str, int] = {
-    # İnstitusional (ağırlıq 3)
-    "jpmorgan":        3, "blackrock":       3, "goldman sachs":  3,
-    "goldman":         2, "vanguard":        2, "fidelity":       2,
-    "morgan stanley":  2, "citadel":         2, "bridgewater":    2,
-    "berkshire":       2, "ray dalio":       2, "warren buffett": 2,
-    # Makro / Monetar (ağırlıq 3)
-    "federal reserve": 3, "fed":             3, "fomc":           3,
-    "rate hike":       3, "rate cut":        3, "interest rate":  2,
-    "inflation":       2, "cpi":             2, "ppi":            2,
-    "gdp":             2, "recession":       2, "yield curve":    3,
-    "treasury":        2, "dollar index":    3, "dxy":            3,
-    "ecb":             2, "boj":             2, "imf":            2,
-    # Geopolitik (ağırlıq 3)
-    "hormuz":          3, "middle east":     3, "taiwan":         3,
-    "china":           2, "sanctions":       2, "opec":           2,
-    "oil":             1, "war":             2, "conflict":       2,
-    # Texnoloji / Kripto (ağırlıq 2)
-    "semiconductor":   2, "chip":            2, "nvidia":         2,
-    "ai investments":  2, "bitcoin etf":     3, "spot etf":       3,
-    "crypto":          1, "defi":            1, "sec":            2,
+    # Institusional — ağırlıq 3
+    "jpmorgan": 3, "blackrock": 3, "goldman sachs": 3, "goldman": 2,
+    "vanguard": 2, "fidelity": 2, "morgan stanley": 2, "citadel": 2,
+    "bridgewater": 2, "berkshire": 2, "ray dalio": 2, "warren buffett": 2,
+    # Monetar — ağırlıq 3
+    "federal reserve": 3, "fed": 3, "fomc": 3,
+    "rate hike": 3, "rate cut": 3, "interest rate": 2,
+    "inflation": 2, "cpi": 2, "ppi": 2, "gdp": 2, "recession": 2,
+    "yield curve": 3, "treasury": 2, "dollar index": 3, "dxy": 3,
+    "ecb": 2, "boj": 2, "imf": 2,
+    # Geopolitik — ağırlıq 3
+    "hormuz": 3, "middle east": 3, "taiwan": 3, "china": 2,
+    "sanctions": 2, "opec": 2, "war": 2, "conflict": 2,
+    # Texnoloji/Kripto — ağırlıq 2
+    "semiconductor": 2, "chip": 2, "nvidia": 2, "ai investments": 2,
+    "bitcoin etf": 3, "spot etf": 3, "crypto": 1, "sec": 2,
 }
 
-MASTER_CRYPTO_COUNT = 6     # CryptoPanic-dən
-MASTER_MACRO_COUNT  = 8     # RSS-dən (filtr sonrası)
+MASTER_CRYPTO_COUNT = 6
+MASTER_MACRO_COUNT  = 8
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  YARDIMÇI TİPLƏR
+#  DATA SINIFLAR
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class TimeframeSnapshot:
-    """Bir zaman diliminin tam texniki görüntüsü."""
     tf:               str
-    source:           str                    # "binance" | "yfinance"
+    source:           str
     last_close:       Optional[float]
     last_candle_time: str
     rsi_14:           Optional[float]
@@ -121,7 +103,7 @@ class TimeframeSnapshot:
     ema_200:          Optional[float]
     volume_last:      Optional[float]
     volume_avg24:     Optional[float]
-    volume_status:    str                    # "SPIKE" | "NORMAL" | "LOW" | "UNKNOWN"
+    volume_status:    str   # SPIKE | NORMAL | LOW | UNKNOWN
     error:            Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -130,13 +112,12 @@ class TimeframeSnapshot:
 
 @dataclass
 class ScoutResult:
-    """Bir aktivin bütün zaman dilimləri üçün Scout nəticəsi."""
-    symbol:      str
-    asset_type:  str                         # "crypto" | "traditional"
-    scanned_at:  str
-    timeframes:  dict[str, dict]             # tf → TimeframeSnapshot.to_dict()
-    scout_ok:    bool
-    errors:      list[str] = field(default_factory=list)
+    symbol:     str
+    asset_type: str
+    scanned_at: str
+    timeframes: dict[str, dict]
+    scout_ok:   bool
+    errors:     list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -144,13 +125,12 @@ class ScoutResult:
 
 @dataclass
 class NewsItem:
-    """Bir xəbər elementi."""
-    category:     str                        # "crypto" | "macro"
+    category:     str   # crypto | macro
     title:        str
     source:       str
     published_at: str
     url:          str
-    score:        int = 0                    # Big-Fish relevance skoru
+    score:        int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -165,7 +145,6 @@ def _utc_now() -> str:
 
 
 def _safe_round(val: Any, n: int = 4) -> Optional[float]:
-    """NaN / None / istənilən uğursuz çevrilmənin öhdəsindən gəlir."""
     try:
         f = float(val)
         return None if pd.isna(f) else round(f, n)
@@ -175,29 +154,26 @@ def _safe_round(val: Any, n: int = 4) -> Optional[float]:
 
 def _is_crypto(symbol: str) -> bool:
     """
-    Ticker-in Binance cütü olub-olmadığını müəyyən edir.
-    'BTCUSDT' → True  |  'SPY' → False  |  'BTC-USD' → False
+    BTCUSDT, ETHUSDT → True (Binance)
+    SPY, GLD, AAPL   → False (yfinance)
+    BTC-USD           → False (tire var → yfinance formatı)
     """
     s = symbol.upper().strip()
-    crypto_suffixes = ("USDT", "BUSD", "ETH", "BTC", "BNB", "USDC")
-    if any(s.endswith(sfx) for sfx in crypto_suffixes):
+    if any(s.endswith(sfx) for sfx in ("USDT", "BUSD", "BTC", "ETH", "BNB", "USDC")):
         return True
-    # Binance format: yalnız böyük hərf+rəqəm, tire/nöqtə yoxdur, 5-12 simvol
     return bool(re.fullmatch(r"[A-Z0-9]{5,12}", s))
 
 
-def _volume_status(last: Optional[float], avg: Optional[float]) -> str:
+def _vol_status(last: Optional[float], avg: Optional[float]) -> str:
     if last is None or avg is None or avg == 0:
         return "UNKNOWN"
-    ratio = last / avg
-    if ratio >= LIQUIDITY_MULTIPLIER:
+    r = last / avg
+    if r >= LIQUIDITY_MULTIPLIER:
         return "SPIKE"
-    if ratio >= 0.8:
-        return "NORMAL"
-    return "LOW"
+    return "NORMAL" if r >= 0.8 else "LOW"
 
 
-def _parse_rss_time(entry: Any) -> str:
+def _rss_time(entry: Any) -> str:
     for attr in ("published_parsed", "updated_parsed", "created_parsed"):
         t = getattr(entry, attr, None)
         if t:
@@ -209,67 +185,46 @@ def _parse_rss_time(entry: Any) -> str:
     return _utc_now()
 
 
-def _domain_from_url(url: str) -> str:
-    m = re.search(r"(?:https?://)?(?:www\.|feeds?\.)?([^/\s]+)", url)
-    return m.group(1) if m else url
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-#  SCOUT AGENT  ───  Day-Trading / Qısamüddətli Analiz
+#  SCOUT AGENT
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ScoutAgent:
     """
-    Bir aktivi 4 zaman dilimində (5m · 1h · 4h · 1d) skan edir.
-    Hər dilim üçün RSI(14), EMA(50/100/200) və həcm anomaliyası hesablanır.
-
-    İstifadə:
-        scout = ScoutAgent()
-        result = scout.scan("BTCUSDT")   # kripto
-        result = scout.scan("SPY")       # səhm/ETF
+    4 zaman dilimini (5m·1h·4h·1d) paralel skan edir.
+    Kripto → Binance REST  |  Ənənəvi → yfinance
     """
 
-    # ── OHLCV çəkmə ───────────────────────────────────────────────────────────
+    # ── OHLCV ─────────────────────────────────────────────────────────────────
 
-    def _fetch_binance_klines(self,
-                               symbol: str,
-                               interval: str,
-                               limit: int = SCOUT_KLINE_LIMIT) -> pd.DataFrame:
-        """Binance REST API-dən OHLCV çəkir, DataFrame qaytarır."""
-        url    = f"{BINANCE_BASE}/api/v3/klines"
-        params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-        resp   = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+    def _binance_klines(self, symbol: str, interval: str) -> pd.DataFrame:
+        url  = f"{BINANCE_BASE}/api/v3/klines"
+        resp = requests.get(
+            url,
+            params={"symbol": symbol.upper(), "interval": interval,
+                    "limit": KLINE_LIMIT},
+            timeout=HTTP_TIMEOUT,
+        )
         resp.raise_for_status()
-        raw = resp.json()
-        df  = pd.DataFrame(raw, columns=[
+        df = pd.DataFrame(resp.json(), columns=[
             "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "quote_vol", "trades",
-            "taker_base", "taker_quote", "ignore",
+            "close_time", "quote_vol", "trades", "tb_base", "tb_quote", "ignore",
         ])
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-        for col in ("open", "high", "low", "close", "volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        for c in ("open", "high", "low", "close", "volume"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.dropna(subset=["close"])
 
-    def _fetch_yf_ohlcv(self,
-                         symbol: str,
-                         yf_interval: str,
-                         yf_period: str) -> pd.DataFrame:
-        """yfinance-dən OHLCV çəkir, normallaşdırılmış DataFrame qaytarır."""
-        df = yf.download(
-            symbol,
-            period=yf_period,
-            interval=yf_interval,
-            progress=False,
-            auto_adjust=True,
-        )
+    def _yf_ohlcv(self, symbol: str, iv: str, period: str) -> pd.DataFrame:
+        df = yf.download(symbol, period=period, interval=iv,
+                         progress=False, auto_adjust=True)
         if df.empty:
-            raise ValueError(f"yfinance boş dataframe [{symbol} {yf_interval}]")
+            raise ValueError(f"yfinance boş [{symbol} {iv}]")
 
-        # MultiIndex sütunları düzəlt
+        # MultiIndex düzəltmə
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [
-                "_".join(str(c) for c in col if c).lower().split("_")[0]
+                "_".join(str(x) for x in col if x).lower().split("_")[0]
                 for col in df.columns
             ]
         else:
@@ -279,381 +234,264 @@ class ScoutAgent:
         df = df.reset_index()
         df["open_time"] = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
 
-        # Sütun adları normallaşdırma
-        col_map = {}
-        for needed in ("open", "high", "low", "close", "volume"):
-            match = next((c for c in df.columns if needed in c.lower()), None)
-            if match:
-                col_map[match] = needed
-        df = df.rename(columns=col_map)
-
-        for col in ("open", "high", "low", "close", "volume"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+        # Sütun adlarını normallaşdır
+        remap = {}
+        for need in ("open", "high", "low", "close", "volume"):
+            found = next((c for c in df.columns if need in c.lower()), None)
+            if found:
+                remap[found] = need
+        df = df.rename(columns=remap)
+        for c in ("open", "high", "low", "close", "volume"):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.dropna(subset=["close"])
 
     def _resample_4h(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        yfinance 4h interval dəstəkləmir.
-        1h verisini 4h-a resample edirik: O=first, H=max, L=min, C=last, V=sum
-        """
+        """1h → 4h resample (yfinance 4h dəstəkləmir)."""
         df = df.set_index("open_time").sort_index()
-        rule = "4h"
-        resampled = df["close"].resample(rule).last().rename("close")
-        result = pd.DataFrame({"close": resampled})
-        result["open"]   = df["open"].resample(rule).first()
-        result["high"]   = df["high"].resample(rule).max()
-        result["low"]    = df["low"].resample(rule).min()
-        result["volume"] = df["volume"].resample(rule).sum()
-        result = result.dropna(subset=["close"]).reset_index()
-        result = result.rename(columns={"open_time": "open_time"})
+        result = pd.DataFrame({
+            "open":   df["open"].resample("4h").first(),
+            "high":   df["high"].resample("4h").max(),
+            "low":    df["low"].resample("4h").min(),
+            "close":  df["close"].resample("4h").last(),
+            "volume": df["volume"].resample("4h").sum(),
+        }).dropna(subset=["close"]).reset_index()
         return result
 
-    # ── İndikator hesablaması ──────────────────────────────────────────────────
+    # ── İndikatorlar ──────────────────────────────────────────────────────────
 
-    def _compute_indicators(self, df: pd.DataFrame) -> dict:
-        """
-        `ta` kitabxanası ilə RSI(14) + EMA(50, 100, 200) hesablayır.
-        Minimum şam sayı yetərsizdirsə None qaytarır.
-        """
+    def _indicators(self, df: pd.DataFrame) -> dict:
         close = df["close"].dropna()
         n     = len(close)
-
-        rsi_val   = None
-        ema50_val = ema100_val = ema200_val = None
+        out   = {"rsi_14": None, "ema_50": None, "ema_100": None, "ema_200": None}
 
         if n >= 15:
-            rsi_val = _safe_round(
-                ta.momentum.RSIIndicator(close=close, window=14)
-                  .rsi().iloc[-1]
-            )
-
+            out["rsi_14"] = _safe_round(
+                ta.momentum.RSIIndicator(close=close, window=14).rsi().iloc[-1])
         if n >= 50:
-            ema50_val = _safe_round(
-                ta.trend.EMAIndicator(close=close, window=50)
-                  .ema_indicator().iloc[-1]
-            )
+            out["ema_50"] = _safe_round(
+                ta.trend.EMAIndicator(close=close, window=50).ema_indicator().iloc[-1])
         if n >= 100:
-            ema100_val = _safe_round(
-                ta.trend.EMAIndicator(close=close, window=100)
-                  .ema_indicator().iloc[-1]
-            )
+            out["ema_100"] = _safe_round(
+                ta.trend.EMAIndicator(close=close, window=100).ema_indicator().iloc[-1])
         if n >= 200:
-            ema200_val = _safe_round(
-                ta.trend.EMAIndicator(close=close, window=200)
-                  .ema_indicator().iloc[-1]
-            )
+            out["ema_200"] = _safe_round(
+                ta.trend.EMAIndicator(close=close, window=200).ema_indicator().iloc[-1])
+        return out
 
-        return {
-            "rsi_14":  rsi_val,
-            "ema_50":  ema50_val,
-            "ema_100": ema100_val,
-            "ema_200": ema200_val,
-        }
-
-    # ── Həcm anomaliyası ───────────────────────────────────────────────────────
-
-    def _volume_analysis(self, df: pd.DataFrame) -> tuple[Optional[float], Optional[float], str]:
-        """
-        Son şamın həcmini əvvəlki VOLUME_LOOKBACK şamın ortalaması ilə müqayisə edir.
-        Qaytarır: (last_volume, avg_volume, status)
-        """
+    def _volume(self, df: pd.DataFrame) -> tuple[Optional[float], Optional[float], str]:
         if "volume" not in df.columns or len(df) < 2:
             return None, None, "UNKNOWN"
+        vols    = df["volume"].dropna()
+        last    = _safe_round(vols.iloc[-1], 2)
+        lookbk  = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
+        avg     = _safe_round(lookbk.mean(), 2) if len(lookbk) >= 3 else None
+        return last, avg, _vol_status(last, avg)
 
-        vols       = df["volume"].dropna()
-        last_vol   = _safe_round(vols.iloc[-1], 2)
-        lookback   = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
-        avg_vol    = _safe_round(lookback.mean(), 2) if len(lookback) >= 3 else None
-        status     = _volume_status(last_vol, avg_vol)
-        return last_vol, avg_vol, status
+    # ── Tek TF snapshot ───────────────────────────────────────────────────────
 
-    # ── Bir zaman dilimi üçün tam snapshot ────────────────────────────────────
-
-    def _scan_single_timeframe(self,
-                                symbol:      str,
-                                tf_label:    str,
-                                is_crypto_f: bool) -> TimeframeSnapshot:
-        """
-        Bir zaman dilimi (məs. '1h') üçün tam TimeframeSnapshot qaytarır.
-        Xəta baş verərsə error sahəli snapshot qaytarır, exception atmır.
-        """
-        b_interval, yf_interval, yf_period = SCOUT_TIMEFRAMES[tf_label]
+    def _snap(self, symbol: str, tf: str, is_crypto: bool) -> TimeframeSnapshot:
+        b_iv, yf_iv, yf_period = SCOUT_TIMEFRAMES[tf]
         try:
-            if is_crypto_f:
-                df     = self._fetch_binance_klines(symbol, b_interval)
+            if is_crypto:
+                df     = self._binance_klines(symbol, b_iv)
                 source = "binance"
             else:
-                if tf_label == "4h":
-                    # 1h data çəkib 4h-a resample edirik
-                    _, yf_1h, period_1h = SCOUT_TIMEFRAMES["1h"]
-                    raw_df = self._fetch_yf_ohlcv(symbol, yf_1h, period_1h)
-                    df     = self._resample_4h(raw_df)
+                if tf == "4h":
+                    _, iv1h, p1h = SCOUT_TIMEFRAMES["1h"]
+                    df = self._resample_4h(self._yf_ohlcv(symbol, iv1h, p1h))
                 else:
-                    df     = self._fetch_yf_ohlcv(symbol, yf_interval, yf_period)
+                    df = self._yf_ohlcv(symbol, yf_iv, yf_period)
                 source = "yfinance"
 
             if df.empty:
                 raise ValueError("Boş dataframe")
 
-            last_row    = df.iloc[-1]
-            last_close  = _safe_round(last_row["close"])
-
-            # Son şam vaxtı
-            raw_time    = last_row.get("open_time")
+            last      = df.iloc[-1]
+            raw_time  = last.get("open_time")
             try:
-                ts          = pd.Timestamp(raw_time)
-                ts          = ts.tz_localize("UTC") if ts.tzinfo is None else ts
-                candle_time = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                ts   = pd.Timestamp(raw_time)
+                ts   = ts.tz_localize("UTC") if ts.tzinfo is None else ts
+                ctime = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
             except Exception:
-                candle_time = _utc_now()
+                ctime = _utc_now()
 
-            indicators  = self._compute_indicators(df)
-            vol_last, vol_avg, vol_status = self._volume_analysis(df)
+            ind  = self._indicators(df)
+            vl, va, vs = self._volume(df)
 
             return TimeframeSnapshot(
-                tf               = tf_label,
-                source           = source,
-                last_close       = last_close,
-                last_candle_time = candle_time,
-                rsi_14           = indicators["rsi_14"],
-                ema_50           = indicators["ema_50"],
-                ema_100          = indicators["ema_100"],
-                ema_200          = indicators["ema_200"],
-                volume_last      = vol_last,
-                volume_avg24     = vol_avg,
-                volume_status    = vol_status,
+                tf=tf, source=source,
+                last_close=_safe_round(last["close"]),
+                last_candle_time=ctime,
+                rsi_14=ind["rsi_14"], ema_50=ind["ema_50"],
+                ema_100=ind["ema_100"], ema_200=ind["ema_200"],
+                volume_last=vl, volume_avg24=va, volume_status=vs,
             )
-
         except Exception as exc:
-            log.warning("Scout TF xətası [%s %s]: %s", symbol, tf_label, exc)
+            log.warning("Scout TF xəta [%s %s]: %s", symbol, tf, exc)
             return TimeframeSnapshot(
-                tf               = tf_label,
-                source           = "binance" if is_crypto_f else "yfinance",
-                last_close       = None,
-                last_candle_time = _utc_now(),
-                rsi_14           = None,
-                ema_50           = None,
-                ema_100          = None,
-                ema_200          = None,
-                volume_last      = None,
-                volume_avg24     = None,
-                volume_status    = "UNKNOWN",
-                error            = str(exc),
+                tf=tf, source="binance" if is_crypto else "yfinance",
+                last_close=None, last_candle_time=_utc_now(),
+                rsi_14=None, ema_50=None, ema_100=None, ema_200=None,
+                volume_last=None, volume_avg24=None, volume_status="UNKNOWN",
+                error=str(exc),
             )
 
-    # ── Açıq API: tam scan ────────────────────────────────────────────────────
+    # ── Açıq API ──────────────────────────────────────────────────────────────
 
     def scan(self, symbol: str) -> ScoutResult:
-        """
-        Bir aktivi bütün 4 TF-də paralel olaraq skan edir.
+        """Bir aktivi 4 TF-də paralel skan edir."""
+        sym       = symbol.upper()
+        crypto    = _is_crypto(sym)
+        tfs       = list(SCOUT_TIMEFRAMES)
+        snaps     : dict[str, dict] = {}
+        errors    : list[str] = []
 
-        Args:
-            symbol: 'BTCUSDT', 'ETHUSDT', 'SPY', 'GLD', 'AAPL' və s.
+        log.info("Scout → %s (%s) [%s]", sym,
+                 "kripto" if crypto else "ənənəvi", " · ".join(tfs))
 
-        Returns:
-            ScoutResult — bütün TF-lərin snapshot-larını özündə cəmləyir.
-        """
-        sym_upper  = symbol.upper()
-        is_crypto  = _is_crypto(sym_upper)
-        tfs        = list(SCOUT_TIMEFRAMES.keys())
-        snapshots  = {}
-        errors     = []
-
-        log.info("Scout skan başladı: %s (%s) — %s",
-                 sym_upper, "kripto" if is_crypto else "ənənəvi", " · ".join(tfs))
-
-        # Bütün TF-ləri paralel çəkirik
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="scout") as pool:
-            future_map = {
-                pool.submit(self._scan_single_timeframe, sym_upper, tf, is_crypto): tf
-                for tf in tfs
-            }
-            for future in as_completed(future_map, timeout=THREAD_TIMEOUT):
-                tf_label = future_map[future]
+            fmap = {pool.submit(self._snap, sym, tf, crypto): tf for tf in tfs}
+            for fut in as_completed(fmap, timeout=THREAD_TIMEOUT):
+                tf = fmap[fut]
                 try:
-                    snap = future.result()
-                    snapshots[tf_label] = snap.to_dict()
+                    snap = fut.result()
+                    snaps[tf] = snap.to_dict()
                     if snap.error:
-                        errors.append(f"{tf_label}: {snap.error}")
+                        errors.append(f"{tf}: {snap.error}")
                 except FuturesTimeout:
-                    msg = f"{tf_label}: timeout ({THREAD_TIMEOUT}s)"
-                    log.error("Scout timeout: %s %s", sym_upper, msg)
-                    errors.append(msg)
-                except Exception as exc:
-                    msg = f"{tf_label}: {exc}"
-                    log.error("Scout future xətası: %s %s", sym_upper, msg)
-                    errors.append(msg)
+                    errors.append(f"{tf}: timeout")
+                except Exception as e:
+                    errors.append(f"{tf}: {e}")
 
-        scout_ok = any(
-            snapshots.get(tf, {}).get("last_close") is not None
-            for tf in tfs
-        )
-
-        return ScoutResult(
-            symbol     = sym_upper,
-            asset_type = "crypto" if is_crypto else "traditional",
-            scanned_at = _utc_now(),
-            timeframes = snapshots,
-            scout_ok   = scout_ok,
-            errors     = errors,
-        )
+        ok = any(snaps.get(t, {}).get("last_close") is not None for t in tfs)
+        return ScoutResult(symbol=sym,
+                           asset_type="crypto" if crypto else "traditional",
+                           scanned_at=_utc_now(),
+                           timeframes=snaps, scout_ok=ok, errors=errors)
 
     def scan_multiple(self, symbols: list[str]) -> list[dict]:
-        """
-        Bir neçə aktivi paralel skan edir.
-
-        Args:
-            symbols: ['BTCUSDT', 'ETHUSDT', 'SPY', 'GLD']
-
-        Returns:
-            ScoutResult siyahısı (dict formatında)
-        """
-        results = []
-        with ThreadPoolExecutor(max_workers=min(len(symbols), 6),
-                                thread_name_prefix="scout_multi") as pool:
-            futures = {pool.submit(self.scan, sym): sym for sym in symbols}
-            for future in as_completed(futures, timeout=THREAD_TIMEOUT * 2):
-                sym = futures[future]
+        """Bir neçə aktivi paralel skan edir, dict siyahısı qaytarır."""
+        results: list[dict] = []
+        workers = min(len(symbols), 6)
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="scout_m") as pool:
+            fmap = {pool.submit(self.scan, s): s for s in symbols}
+            for fut in as_completed(fmap, timeout=THREAD_TIMEOUT * 2):
+                sym = fmap[fut]
                 try:
-                    results.append(future.result().to_dict())
-                except Exception as exc:
-                    log.error("scan_multiple xətası [%s]: %s", sym, exc)
+                    results.append(fut.result().to_dict())
+                except Exception as e:
+                    log.error("scan_multiple xəta [%s]: %s", sym, e)
                     results.append({
                         "symbol": sym.upper(), "scout_ok": False,
-                        "error": str(exc), "scanned_at": _utc_now(),
+                        "scanned_at": _utc_now(), "error": str(e),
+                        "timeframes": {}, "errors": [str(e)],
                     })
         return results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MASTER AGENT  ───  Macro / Geopolitical / Institutional Flow
+#  MASTER AGENT
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MasterAgent:
     """
-    Qlobal makroekonomik, geopolitik və institusional xəbərləri toplayır.
-
-    Mənbələr:
-      • CryptoPanic API   → kripto xəbərləri
-      • Çoxlu RSS lentlər → makro + institusional xəbərlər
-
-    Ağıllı Süzgəc:
-      BIG_FISH_KEYWORDS sözlük ağırlıqlarına əsasən hər xəbərə score verilir.
-      JPMorgan / BlackRock / FED / Geopolitik hadisələr yüksək score alır.
+    Qlobal makro + institusional xəbərləri toplayır.
+    CryptoPanic → kripto  |  RSS lentlər → makro
+    BIG_FISH_KEYWORDS ilə weighted score verilir.
     """
 
     def __init__(self, cryptopanic_token: str):
         self.cp_token = cryptopanic_token
 
+    # ── Score ─────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _score(text: str) -> int:
+        t = text.lower()
+        return sum(w for kw, w in BIG_FISH_KEYWORDS.items() if kw in t)
+
     # ── CryptoPanic ───────────────────────────────────────────────────────────
 
-    def _fetch_crypto_news(self,
-                            currencies: str  = "BTC,ETH",
-                            count:      int  = MASTER_CRYPTO_COUNT) -> list[NewsItem]:
-        url    = f"{CRYPTOPANIC_BASE}/posts/"
-        params = {
-            "auth_token": self.cp_token,
-            "currencies": currencies.upper(),
-            "kind":       "news",
-            "public":     "true",
-        }
+    def _crypto_news(self, currencies: str, count: int) -> list[NewsItem]:
+        if not self.cp_token:
+            log.warning("CRYPTOPANIC_TOKEN təyin edilməyib — kripto xəbəri yoxdur.")
+            return []
         try:
-            resp = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+            resp = requests.get(
+                f"{CRYPTOPANIC_BASE}/posts/",
+                params={"auth_token": self.cp_token,
+                        "currencies": currencies.upper(),
+                        "kind": "news", "public": "true"},
+                timeout=HTTP_TIMEOUT,
+            )
             resp.raise_for_status()
-            results = resp.json().get("results", [])
+            raw = resp.json().get("results", [])
         except Exception as exc:
-            log.warning("CryptoPanic xətası: %s", exc)
+            log.warning("CryptoPanic xəta: %s", exc)
             return []
 
-        items = []
-        for entry in results[:count]:
-            title = entry.get("title", "").strip()
-            score = self._score_text(title)
-            items.append(NewsItem(
-                category     = "crypto",
-                title        = title,
-                source       = entry.get("source", {}).get("title", "CryptoPanic"),
-                published_at = entry.get("published_at", _utc_now()),
-                url          = entry.get("url", ""),
-                score        = score,
-            ))
-        return items
+        return [
+            NewsItem(
+                category="crypto",
+                title=e.get("title", "").strip(),
+                source=e.get("source", {}).get("title", "CryptoPanic"),
+                published_at=e.get("published_at", _utc_now()),
+                url=e.get("url", ""),
+                score=self._score(e.get("title", "")),
+            )
+            for e in raw[:count]
+            if e.get("title", "").strip()
+        ]
 
-    # ── RSS xəbərləri ─────────────────────────────────────────────────────────
+    # ── RSS ───────────────────────────────────────────────────────────────────
 
-    def _fetch_single_rss(self,
-                           label: str,
-                           url:   str) -> list[NewsItem]:
-        """Bir RSS lentini oxuyur, filtr edir, NewsItem siyahısı qaytarır."""
-        items = []
+    def _one_rss(self, label: str, url: str) -> list[NewsItem]:
+        items: list[NewsItem] = []
         try:
-            feed = feedparser.parse(url)
-            source_name = getattr(feed.feed, "title", None) or label
-
-            for entry in feed.entries:
-                title   = getattr(entry, "title",   "").strip()
-                summary = getattr(entry, "summary", "").strip()
-
+            feed   = feedparser.parse(url)
+            src    = getattr(feed.feed, "title", None) or label
+            for e in feed.entries:
+                title   = getattr(e, "title",   "").strip()
+                summary = getattr(e, "summary", "").strip()
                 if not title:
                     continue
-
-                score = self._score_text(f"{title} {summary}")
+                score = self._score(f"{title} {summary}")
                 if score == 0:
-                    continue   # heç bir açar söz yoxdur, atla
-
+                    continue
                 items.append(NewsItem(
-                    category     = "macro",
-                    title        = title,
-                    source       = source_name,
-                    published_at = _parse_rss_time(entry),
-                    url          = getattr(entry, "link", ""),
-                    score        = score,
+                    category="macro", title=title, source=src,
+                    published_at=_rss_time(e),
+                    url=getattr(e, "link", ""), score=score,
                 ))
         except Exception as exc:
-            log.warning("RSS xətası [%s]: %s", label, exc)
+            log.warning("RSS xəta [%s]: %s", label, exc)
         return items
 
-    def _fetch_macro_news(self, count: int = MASTER_MACRO_COUNT) -> list[NewsItem]:
-        """Bütün RSS lentlərini paralel oxuyur, ən yüksək scorlu-ları qaytarır."""
-        all_items: list[NewsItem] = []
-
+    def _macro_news(self, count: int) -> list[NewsItem]:
+        all_: list[NewsItem] = []
         with ThreadPoolExecutor(max_workers=len(MASTER_RSS_FEEDS),
-                                thread_name_prefix="master_rss") as pool:
-            futures = {
-                pool.submit(self._fetch_single_rss, label, url): label
-                for label, url in MASTER_RSS_FEEDS
-            }
-            for future in as_completed(futures, timeout=THREAD_TIMEOUT):
-                label = futures[future]
+                                thread_name_prefix="rss") as pool:
+            fmap = {pool.submit(self._one_rss, lbl, url): lbl
+                    for lbl, url in MASTER_RSS_FEEDS}
+            for fut in as_completed(fmap, timeout=THREAD_TIMEOUT):
                 try:
-                    all_items.extend(future.result())
-                except Exception as exc:
-                    log.warning("RSS future xətası [%s]: %s", label, exc)
+                    all_.extend(fut.result())
+                except Exception as e:
+                    log.warning("RSS future xəta: %s", e)
 
-        # Dublikat başlıqları sil (eyni başlıq fərqli mənbədən gələ bilər)
-        seen   : set[str]      = set()
-        unique : list[NewsItem] = []
-        for item in all_items:
+        # Dublikat sil
+        seen: set[str] = set()
+        unique: list[NewsItem] = []
+        for item in all_:
             key = item.title.lower()[:80]
             if key not in seen:
                 seen.add(key)
                 unique.append(item)
 
-        # Scorea görə sırala, ən yüksək count-u götür
         unique.sort(key=lambda x: x.score, reverse=True)
         return unique[:count]
-
-    # ── Score hesablaması ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _score_text(text: str) -> int:
-        """
-        Mətni BIG_FISH_KEYWORDS-lə müqayisə edir, ağırlıqlanmış score qaytarır.
-        score = 0 → xəbər uyğun deyil (atlanacaq)
-        """
-        lower = text.lower()
-        return sum(weight for kw, weight in BIG_FISH_KEYWORDS.items() if kw in lower)
 
     # ── Açıq API ──────────────────────────────────────────────────────────────
 
@@ -661,222 +499,174 @@ class MasterAgent:
                 currencies:   str = "BTC,ETH",
                 crypto_count: int = MASTER_CRYPTO_COUNT,
                 macro_count:  int = MASTER_MACRO_COUNT) -> dict:
-        """
-        Bütün xəbərləri toplayır, kateqoriyaya görə ayırır.
-
-        Returns:
-            {
-              "collected_at": "...",
-              "crypto_news":  [ NewsItem.to_dict(), ... ],
-              "macro_news":   [ NewsItem.to_dict(), ... ],
-              "top_signals":  [ yüksək scorlu xəbərlər birlikdə ],
-              "master_ok":    bool
-            }
-        """
-        log.info("Master agent xəbər toplama başladı ...")
-
-        # Kripto + Makro paralel çəkirik
+        log.info("Master → xəbər toplama başladı")
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="master") as pool:
-            f_crypto = pool.submit(self._fetch_crypto_news, currencies, crypto_count)
-            f_macro  = pool.submit(self._fetch_macro_news, macro_count)
-
+            fc = pool.submit(self._crypto_news, currencies, crypto_count)
+            fm = pool.submit(self._macro_news,  macro_count)
             try:
-                crypto_news = f_crypto.result(timeout=THREAD_TIMEOUT)
-            except Exception as exc:
-                log.error("CryptoPanic toplama xətası: %s", exc)
-                crypto_news = []
-
+                crypto = fc.result(timeout=THREAD_TIMEOUT)
+            except Exception as e:
+                log.error("CryptoPanic timeout: %s", e)
+                crypto = []
             try:
-                macro_news = f_macro.result(timeout=THREAD_TIMEOUT)
-            except Exception as exc:
-                log.error("Makro xəbər toplama xətası: %s", exc)
-                macro_news = []
+                macro = fm.result(timeout=THREAD_TIMEOUT)
+            except Exception as e:
+                log.error("RSS timeout: %s", e)
+                macro = []
 
-        # Bütün xəbərləri bir yerdə scorea görə sırala → Top siqnallar
-        combined = crypto_news + macro_news
+        combined = crypto + macro
         combined.sort(key=lambda x: x.score, reverse=True)
-        top_signals = [i.to_dict() for i in combined[:5]]
+        top5 = [i.to_dict() for i in combined[:5]]
 
-        log.info("Master: %d kripto + %d makro xəbər toplandı",
-                 len(crypto_news), len(macro_news))
-
+        log.info("Master → %d kripto + %d makro xəbər", len(crypto), len(macro))
         return {
             "collected_at": _utc_now(),
-            "crypto_news":  [i.to_dict() for i in crypto_news],
-            "macro_news":   [i.to_dict() for i in macro_news],
-            "top_signals":  top_signals,
+            "crypto_news":  [i.to_dict() for i in crypto],
+            "macro_news":   [i.to_dict() for i in macro],
+            "top_signals":  top5,
             "master_ok":    len(combined) > 0,
         }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  VAHİD AGGREGATOR
+#  AGGREGATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
 def aggregate_context(
     symbols:           list[str],
     cryptopanic_token: str,
-    news_currencies:   str  = "BTC,ETH",
+    news_currencies:   str = "BTC,ETH",
 ) -> dict:
     """
-    Scout + Master agentlərini işə salır, nəticələri vahid JSON sözlüyünə yığır.
+    Scout + Master-i paralel işlədib vahid JSON sözlüyünə yığır.
 
     Args:
-        symbols:           Skan ediləcək tikerlər — ['BTCUSDT', 'ETHUSDT', 'SPY']
-        cryptopanic_token: CryptoPanic API açarı
-        news_currencies:   CryptoPanic filtr simvolları
+        symbols           — ['BTCUSDT', 'ETHUSDT', 'SPY']
+        cryptopanic_token — CryptoPanic API açarı
+        news_currencies   — CryptoPanic filtr ('BTC,ETH')
 
     Returns:
-        {
-          "engine":       "M.Genat 3.1 Pro",
-          "generated_at": "...",
-          "scout":        { "symbols": [...], "results": [...] },
-          "master":       { "crypto_news": [...], "macro_news": [...], ... },
-          "data_quality": { ... }
-        }
+        engine · generated_at · scout · master · data_quality
+
+    Raises:
+        ValueError  — symbols boşdursa
+        RuntimeError — bütün mənbələr uğursuzsa
     """
     if not symbols:
         raise ValueError("Ən azı bir ticker tələb olunur.")
 
-    log.info("═" * 60)
-    log.info("M.Genat 3.1 Pro — aggregate_context başladı")
-    log.info("Tikerlər: %s", ", ".join(symbols))
-    log.info("═" * 60)
+    log.info("Engine → %s", ", ".join(s.upper() for s in symbols))
 
-    scout_agent  = ScoutAgent()
-    master_agent = MasterAgent(cryptopanic_token)
+    scout  = ScoutAgent()
+    master = MasterAgent(cryptopanic_token)
 
-    # Scout və Master-i paralel işlədirik
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="engine") as pool:
-        f_scout  = pool.submit(scout_agent.scan_multiple, symbols)
-        f_master = pool.submit(master_agent.collect, news_currencies)
+        fs = pool.submit(scout.scan_multiple, [s.upper() for s in symbols])
+        fm = pool.submit(master.collect, news_currencies)
 
         try:
-            scout_results = f_scout.result(timeout=THREAD_TIMEOUT * 2)
-        except Exception as exc:
-            log.error("Scout toplama xətası: %s", exc)
-            scout_results = []
+            scout_res = fs.result(timeout=THREAD_TIMEOUT * 2)
+        except Exception as e:
+            log.error("Scout engine xəta: %s", e)
+            scout_res = []
 
         try:
-            master_results = f_master.result(timeout=THREAD_TIMEOUT * 2)
-        except Exception as exc:
-            log.error("Master toplama xətası: %s", exc)
-            master_results = {
+            master_res = fm.result(timeout=THREAD_TIMEOUT * 2)
+        except Exception as e:
+            log.error("Master engine xəta: %s", e)
+            master_res = {
                 "collected_at": _utc_now(),
                 "crypto_news": [], "macro_news": [],
                 "top_signals": [], "master_ok": False,
             }
 
     quality = {
-        "scout_ok":        any(r.get("scout_ok", False) for r in scout_results),
-        "crypto_news_ok":  len(master_results.get("crypto_news", [])) > 0,
-        "macro_news_ok":   len(master_results.get("macro_news",  [])) > 0,
-        "symbols_scanned": [r.get("symbol") for r in scout_results],
-        "tfs_available":   list(SCOUT_TIMEFRAMES.keys()),
+        "scout_ok":        any(r.get("scout_ok", False) for r in scout_res),
+        "crypto_news_ok":  len(master_res.get("crypto_news", [])) > 0,
+        "macro_news_ok":   len(master_res.get("macro_news",  [])) > 0,
+        "symbols_scanned": [r.get("symbol") for r in scout_res],
+        "tfs_available":   list(SCOUT_TIMEFRAMES),
     }
 
     if not any([quality["scout_ok"],
                 quality["crypto_news_ok"],
                 quality["macro_news_ok"]]):
         raise RuntimeError(
-            "Bütün data mənbələri uğursuz oldu. "
-            "Gemini-yə boş/saxta prompt göndərilmir."
-        )
+            "Bütün data mənbələri uğursuz oldu. Gemini-yə boş prompt göndərilmir.")
 
     return {
         "engine":       "M.Genat 3.1 Pro",
         "generated_at": _utc_now(),
-        "scout": {
-            "symbols": symbols,
-            "results": scout_results,
-        },
-        "master":       master_results,
+        "scout":        {"symbols": symbols, "results": scout_res},
+        "master":       master_res,
         "data_quality": quality,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GEMINI PROMPT BİLDİRİCİSİ  ───  M.Genat 3.1 Pro
+#  PROMPT BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_gemini_prompt(context: dict) -> str:
     """
-    aggregate_context() çıxışını alır, M.Genat 3.1 Pro şəxsiyyəti ilə
-    dual-agent (Scout + Master) Gemini promptunu qaytarır.
+    aggregate_context() çıxışından M.Genat 3.1 Pro Gemini promptu yaradır.
 
-    Qoruyucular:
-      • context None/boşdursa             → ValueError
-      • data_quality tamamilə False-dursa → ValueError (boş prompt qadağan)
-      • Bəzi mənbə uğursuzsa              → ⚠️ bildiriş prompt içinə əlavə edilir
+    Raises:
+        ValueError — context boşdursa və ya keyfiyyət sıfırdırsa
     """
     if not context:
-        raise ValueError("Gemini-yə göndərmək üçün dolu kontekst tələb olunur.")
+        raise ValueError("Boş kontekst. Prompt yaradılmır.")
 
     quality = context.get("data_quality", {})
-    if not quality.get("scout_ok") and \
-       not quality.get("crypto_news_ok") and \
-       not quality.get("macro_news_ok"):
-        raise ValueError(
-            "Bütün data mənbələri uğursuz oldu. Boş prompt göndərilmir."
-        )
+    if not any([quality.get("scout_ok"),
+                quality.get("crypto_news_ok"),
+                quality.get("macro_news_ok")]):
+        raise ValueError("Bütün data mənbələri uğursuz. Boş prompt göndərilmir.")
 
     json_block = json.dumps(context, ensure_ascii=False, indent=2)
 
-    # ── Xəbərdarlıq bloku ─────────────────────────────────────────────────────
+    # Xəbərdarlıq bloku
     warns = []
     if not quality.get("scout_ok"):
-        warns.append("⚠️  Scout texniki datası əlçatmaz — RSI/EMA/Volume analizi məhduddur.")
+        warns.append("⚠️ Scout texniki datası əlçatmaz — RSI/EMA/Volume məhduddur.")
     if not quality.get("crypto_news_ok"):
-        warns.append("⚠️  Kripto xəbərləri boşdur — kripto sentiment analizi mümkün deyil.")
+        warns.append("⚠️ Kripto xəbərləri boşdur.")
     if not quality.get("macro_news_ok"):
-        warns.append("⚠️  Makro RSS lenti boşdur — institusional axın analizi məhduddur.")
+        warns.append("⚠️ Makro RSS lenti boşdur.")
+    warn_block = ("\n[SİSTEM XƏBƏRDARLIĞI]\n" + "\n".join(warns) + "\n") if warns else ""
 
-    warn_block = ""
-    if warns:
-        warn_block = (
-            "\n[SİSTEM XƏBƏRDARLIĞI]\n"
-            + "\n".join(warns)
-            + "\n"
-        )
+    # Sessiya
+    h = datetime.now(timezone.utc).hour
+    if   4  <= h < 8:  session = "Asiya Bağlanışı / Avropa Açılışı"
+    elif 8  <= h < 12: session = "London Açılışı"
+    elif 12 <= h < 17: session = "New York Açılışı"
+    elif 17 <= h < 21: session = "NY Bağlanışı / After-Hours"
+    else:              session = "Gecə / Asiya Açılışı"
 
-    # ── Sessiya (Səhər / Axşam / London / NY açılışı) ─────────────────────────
-    hour = datetime.now(timezone.utc).hour
-    if   4  <= hour < 8:   session = "Asiya Bağlanışı / Avropa Açılışı Səhər"
-    elif 8  <= hour < 12:  session = "London Açılışı"
-    elif 12 <= hour < 17:  session = "New York Açılışı"
-    elif 17 <= hour < 21:  session = "New York Bağlanışı / After-Hours"
-    else:                  session = "Gecə / Asiya Açılışı"
+    symbols_str = ", ".join(str(s) for s in quality.get("symbols_scanned", ["N/A"]))
+    tfs_str     = " · ".join(quality.get("tfs_available", []))
 
-    symbols_str = ", ".join(quality.get("symbols_scanned", ["N/A"]))
-    tfs_str     = " · ".join(quality.get("tfs_available",  []))
-
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    prompt = f"""Sən M.Genat 3.1 Pro-san — eyni anda iki fərqli şəxsiyyəti özündə birləşdirən \
+    return f"""Sən M.Genat 3.1 Pro-san — eyni anda iki fərqli şəxsiyyəti özündə birləşdirən \
 peşəkar maliyyə analitikisən:
 
-  🔬 SCOUT (Day Trader)  — Anlıq 5m/1h/4h/1d şam hərəkətlərini, RSI, EMA crosslarını \
-və Volume Spike siqnallarını real-time dəyərləndirir.
-  🌍 MASTER (Macro Investor)  — Qlobal geopolitik hadisələri, FED / ECB qərarlarını, \
-JPMorgan · BlackRock · Goldman Sachs kimi qurumların hərəkətlərini izləyir.
+🔬 SCOUT (Day Trader) — 5m/1h/4h/1d RSI · EMA crossları · Volume Spike real-time.
+🌍 MASTER (Macro Investor) — FED/ECB qərarları · JPMorgan · BlackRock · Goldman · Geopolitik.
 {warn_block}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SESSIYA  : {session}
 TİKERLƏR : {symbols_str}
 TF-LƏR   : {tfs_str}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MÜTLƏQ QAYDALARIN:
-
-1. Heç bir qiyməti, rəqəmi, tarixi uydurmа. YALNIZ aşağıdakı JSON-dakı \
+1. Heç bir qiyməti, rəqəmi, tarixi uydurma. YALNIZ aşağıdakı JSON-dakı \
 faktiki API datasına istinad et.
 2. Scout datası (RSI, EMA, Volume) ilə Master datası (FED, institusional, \
-geopolitik xəbərlər) arasında zəncirvari (causal chain) bağlantı qur.
-3. JPMorgan, BlackRock, Goldman Sachs, FED, Dollar Index, geopolitik \
-hadisə xəbərləri varsa — hesabatın mərkəzinə o məlumatları qoy.
-4. Volume Spike siqnalı varsa — bu şamın həcm anomaliyasını mütləq qeyd et \
-və makro səbəbini araşdır.
-5. 4 TF-nin (5m · 1h · 4h · 1d) uyğunluğunu yoxla: eyni istiqamətdə olarsa \
-"Trend Confluence" qeyd et.
+geopolitik) arasında zəncirvari (causal chain) bağlantı qur.
+3. JPMorgan / BlackRock / Goldman / FED / Dollar Index / Geopolitik xəbərləri \
+varsa — hesabatın mərkəzinə o məlumatları qoy.
+4. Volume SPIKE varsa — anomaliyanı mütləq qeyd et, makro səbəbini araşdır.
+5. 4 TF (5m·1h·4h·1d) eyni istiqamətdədirsə → "Trend Confluence" qeyd et.
 
 --- CANLI DATA (JSON) ---
 {json_block}
@@ -887,115 +677,83 @@ M.Genat 3.1 Pro Hesabatını hazırla:
 
 ## 🔬 SCOUT ANALİZİ
 
-**Multi-Timeframe Xülasəsi**
-Hər TF (5m · 1h · 4h · 1d) üçün: Qiymət · RSI zonu · EMA mövqeyi · Volume statusu.
-Cədvəl formatında göstər.
+**Multi-Timeframe Cədvəli**
+Hər TF üçün: Qiymət · RSI zonu · EMA mövqeyi · Volume statusu.
 
 **Trend Confluence**
-Bütün TF-lər eyni istiqamətdədirsə → güclü siqnal. Fərqlidirsə → konsolidasiya/qeyri-müəyyənlik.
+TF-lər eyni istiqamətdədirsə → güclü siqnal. Fərqlidirsə → qeyri-müəyyənlik.
 
 **Volume Spike Analizi**
-SPIKE statusu olan TF varsa: Son şamın həcmi ortalamanın neçə qatıdır? Bu anomaliyanın \
-mümkün makro/korporativ səbəbi nədir?
+SPIKE varsa: həcm ortalamanın neçə qatıdır? Makro/korporativ səbəbi?
 
-**EMA Mövqe Xəritəsi**
-Qiymət EMA50/100/200-ün nə tərəfindədir? Bullish/Bearish alignment varmı?
+**EMA Xəritəsi**
+Qiymət EMA50/100/200-ün nə tərəfindədir? Bullish/Bearish alignment?
 
 ---
 
 ## 🌍 MASTER ANALİZİ
 
 **İnstitusional Siqnallar**
-JPMorgan, BlackRock, Goldman Sachs, Vanguard hərəkətləri (əgər varsa).
-Bu qurumların mövqeyi bazara necə təsir edə bilər?
+JPMorgan · BlackRock · Goldman · Vanguard hərəkətləri (varsa). Bazara təsiri?
 
 **Makro & Monetar Mühit**
-FED / ECB qərarları, faiz, inflyasiya, Dollar Index (DXY) dinamikası.
-Mövcud monetar mühitin aktiv(lər)ə birbaşa/dolayı təsiri.
+FED/ECB qərarları · faiz · inflyasiya · DXY dinamikası. Aktivə təsiri?
 
-**Geopolitik Risk Xəritəsi**
-Orta Şərq, Tayvan boğazı, Hormuz, sanksiyalar — aktiv qiymətinə potensial şok effekti.
+**Geopolitik Risk**
+Orta Şərq · Tayvan · Hormuz · sanksiyalar — potensial şok effekti?
 
 **Kripto Sentiment**
 CryptoPanic xəbərlərinin ümumi tonu: Bullish / Bearish / Mixed.
 
 ---
 
-## ⛓️ ZƏNCİRVARİ ƏLAQƏ ANALİZİ
+## ⛓️ ZƏNCİRVARİ ƏLAQƏ
 
-```
 Makro Katalizator → İnstitusional Mövqe → Texniki Siqnal → Qiymət Hərəkəti
-```
-Bu ardıcıllıqla konkret nümunə qur. Hər addımda JSON-dakı real dataya istinad et.
+Hər addımda JSON-dakı real dataya istinad et.
 
 ---
 
 ## 📊 SENARYO MATRİSİ
 
-| Senaryo    | Tetikləyici Şərt              | Hədəf Zona         | Ehtimal |
-|------------|-------------------------------|--------------------|---------|
-| 🟢 Bullish | (JSON-dakı datadan doldur)    | (rəqəm uydurmа)    | ?%      |
-| 🔴 Bearish | (JSON-dakı datadan doldur)    | (rəqəm uydurmа)    | ?%      |
-| 🟡 Base    | (JSON-dakı datadan doldur)    | (rəqəm uydurmа)    | ?%      |
+| Senaryo    | Tetikləyici Şərt           | Hədəf (EMA-dan) | Ehtimal |
+|------------|----------------------------|-----------------|---------|
+| 🟢 Bullish | JSON-dakı datadan doldur   | uydurma         | ?%      |
+| 🔴 Bearish | JSON-dakı datadan doldur   | uydurma         | ?%      |
+| 🟡 Base    | JSON-dakı datadan doldur   | uydurma         | ?%      |
 
-Qiymət hədəflərini yalnız JSON-dakı mövcud EMA dəyərlərindən çıxar. Uydurmа.
+Qiymət hədəflərini YALNIZ JSON-dakı EMA dəyərlərindən çıxar.
 
 ---
 
 ## 💼 HEDGE-FUND TÖVSİYƏSİ
 
-**Mövqe**: Alış / Satış / Gözlə  
-**Əsas Səbəb**: (Scout + Master sintezi — 2-3 cümlə)  
-**Risk Faktoru**: 1–5 skala (1=minimal, 5=yüksək)  
-**İzlənəcək Növbəti Trigger**: (hansı xəbər/indikator mövqeyi dəyişdirər)
+Mövqe: Alış / Satış / Gözlə
+Əsas Səbəb: Scout + Master sintezi (2-3 cümlə)
+Risk Faktoru: 1–5 (1=minimal, 5=yüksək)
+Növbəti Trigger: hansı xəbər/indikator mövqeyi dəyişdirər?
 
-⚠️ Xatırlatma: Yalnız JSON-dakı faktiki API datasına istinad et. \
-Kənar fərziyyə, uydurmа qiymət/tarix qəti qadağandır."""
-
-    return prompt
+⚠️ Yalnız JSON-dakı faktiki API datasına istinad et. Kənar fərziyyə qadağandır."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  CLI SINAQ REJIMI  ───  python data_engine.py
+#  CLI SINAQ
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import os
-    import sys
+    import os, sys
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s │ %(levelname)-8s │ %(message)s")
 
-    CP_TOKEN = os.getenv("CRYPTOPANIC_TOKEN", "YOUR_TOKEN_HERE")
-    if CP_TOKEN == "YOUR_TOKEN_HERE":
-        print("❌  CRYPTOPANIC_TOKEN mühit dəyişəni təyin edilməyib.")
-        print("    export CRYPTOPANIC_TOKEN=<tokeniniz>")
-        sys.exit(1)
+    CP = os.getenv("CRYPTOPANIC_TOKEN", "")
+    if not CP:
+        print("❌  export CRYPTOPANIC_TOKEN=<token>"); sys.exit(1)
 
-    # Test konfiqurasiyası — istədiyiniz tikerlərə dəyişin
-    TEST_SYMBOLS = os.getenv("TEST_SYMBOLS", "BTCUSDT,ETHUSDT,SPY").split(",")
-
-    print(f"\n{'═' * 64}")
-    print(f"  M.Genat 3.1 Pro — data_engine.py  |  {_utc_now()}")
-    print(f"  Tikerlər: {', '.join(TEST_SYMBOLS)}")
-    print(f"{'═' * 64}\n")
-
-    t0 = time.perf_counter()
-    try:
-        ctx    = aggregate_context(TEST_SYMBOLS, CP_TOKEN)
-        prompt = build_gemini_prompt(ctx)
-        elapsed = time.perf_counter() - t0
-
-        print(f"\n{'─' * 64}")
-        print(f"  Data toplama tamamlandı: {elapsed:.2f}s")
-        print(f"  Keyfiyyət: {ctx['data_quality']}")
-        print(f"{'─' * 64}")
-
-        preview = json.dumps(ctx, ensure_ascii=False, indent=2)
-        print("\n[KONTEKST PREVIEW — ilk 2000 simvol]")
-        print(preview[:2000], "\n... (kəsildi)")
-
-        print(f"\n{'─' * 64}")
-        print("[GEMINI PROMPT PREVIEW — ilk 1000 simvol]")
-        print(prompt[:1000], "\n... (kəsildi)")
-
-    except (ValueError, RuntimeError) as e:
-        print(f"\n❌  {e}")
-        sys.exit(1)
+    SYMS = os.getenv("TEST_SYMBOLS", "BTCUSDT,SPY").split(",")
+    t0   = time.perf_counter()
+    ctx  = aggregate_context(SYMS, CP)
+    pmt  = build_gemini_prompt(ctx)
+    print(f"\nTamamlandı: {time.perf_counter()-t0:.1f}s")
+    print(f"Keyfiyyət : {ctx['data_quality']}")
+    print("\n--- PROMPT PREVIEW (ilk 600 simvol) ---")
+    print(pmt[:600])
