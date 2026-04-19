@@ -90,7 +90,7 @@ def _get_gemini() -> genai.Client:
 
 
 def gemini_call(prompt: str,
-                model:   str = "gemini-1.5-flash",
+                model:   str = "gemini-1.5-flash-latest",
                 retries: int = 3) -> str:
     """Gemini API-yə prompt göndərir."""
     if not GEMINI_API_KEY:
@@ -102,8 +102,11 @@ def gemini_call(prompt: str,
 
     for attempt in range(1, retries + 1):
         try:
+            # Bəzi regionlarda və layihələrdə 'models/' prefixi mütləq tələb olunur
+            model_name = model if model.startswith("models/") else f"models/{model}"
+            
             resp = client.models.generate_content(
-                model=model,
+                model=model_name, # Tam adı göndəririk: models/gemini-1.5-flash
                 contents=prompt,
             )
             # Cavab məzmununu çıxar
