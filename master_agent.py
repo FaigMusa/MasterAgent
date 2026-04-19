@@ -436,19 +436,15 @@ def health_check():
     return "M.Genat 3.1 Pro — Live ✅", 200
 
 
-@app.route("/health", methods=["GET"])
-def health_detail():
-    with _portfolio_lock:
-        d = list(DINAMIK_PORTFEL)
-        s = list(STRATEJI_PORTFEL)
-    return {
-        "status":    "ok",
-        "version":   "M.Genat 3.1 Pro",
-        "dinamik":   d,
-        "strateji":  s,
-        "cp_token":  "✅" if CRYPTOPANIC_KEY else "❌",
-        "gemini":    "✅" if GEMINI_API_KEY  else "❌",
-    }
+@app.route("/check-models", methods=["GET"])
+def check_models():
+    try:
+        client = _get_gemini()
+        models = client.models.list()
+        model_names = [m.name for m in models]
+        return {"visible_models": model_names, "count": len(model_names)}, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
