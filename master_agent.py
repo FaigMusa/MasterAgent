@@ -92,16 +92,13 @@ def _get_gemini() -> genai.Client:
 def gemini_call(prompt: str,
                 model:   str = "gemini-1.5-flash",
                 retries: int = 3) -> str:
-    """
-    Gemini API-yə prompt göndərir.
-    429 (kvota) → eksponensial geri-çəkilmə ilə yenidən cəhd.
-    400/403      → dərhal uğursuzluq (açar xətası, düzəltmək olmaz).
-    """
+    """Gemini API-yə prompt göndərir."""
     if not GEMINI_API_KEY:
         return "❌ GEMINI_API_KEY təyin edilməyib."
 
     client  = _get_gemini()
     wait    = 5  # ilk gözləmə (saniyə)
+    last_error = "Bilinməyən xəta" # 🚨 XƏTANI TUTMAQ ÜÇÜN TƏLƏMİZ
 
     for attempt in range(1, retries + 1):
         try:
@@ -121,19 +118,20 @@ def gemini_call(prompt: str,
             return "⚠️ Gemini boş cavab qaytardı."
 
         except Exception as exc:
-            err = str(exc).lower()
+            last_error = str(exc) # 🚨 XƏTANI BURADA YADDAŞA YAZIRIQ
+            err = last_error.lower()
             log.warning("Gemini cəhd %d/%d xəta: %s", attempt, retries, exc)
 
-            # Açar / icazə xətası — yenidən cəhd faydasızdır
+            # Açar / icazə xətası
             if any(code in err for code in ("api_key", "400", "403", "invalid")):
-                return "❌ Gemini API açarı xətası. Zəhmət olmasa GEMINI_API_KEY-i yoxlayın."
+                return f"❌ Gemini API açarı xətası. Təfərrüat: {last_error}"
 
             # Kvota / rate-limit xətası
             if any(code in err for code in ("429", "quota", "exhausted", "resource")):
                 if attempt < retries:
                     log.info("Kvota — %ds gözlənilir...", wait)
                     time.sleep(wait)
-                    wait *= 2   # eksponensial artım: 5 → 10 → 20
+                    wait *= 2   # eksponensial artım
                 continue
 
             # Şəbəkə/server xətası
@@ -142,8 +140,8 @@ def gemini_call(prompt: str,
                 wait *= 2
             continue
 
-    return f"🚨 GİZLİ XƏTA AŞKARLANDI: {str(exc)}"
-
+    # 🚨 VƏ ƏN SONDA HƏQİQİ XƏTANI ÇAP EDİRİK
+    return f"🚨 GİZLİ XƏTA AŞKARLANDI: {last_error}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM YARDİMÇILARI
