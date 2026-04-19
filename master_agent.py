@@ -90,7 +90,7 @@ def _get_gemini() -> genai.Client:
 
 
 def gemini_call(prompt: str,
-                model:   str = "gemini-1.5-flash-latest",
+                model:   str = "gemini-2.5-flash",
                 retries: int = 3) -> str:
     """Gemini API-yə prompt göndərir."""
     if not GEMINI_API_KEY:
