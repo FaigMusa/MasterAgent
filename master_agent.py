@@ -353,19 +353,21 @@ def handle_message(message: telebot.types.Message) -> None:
     threading.Thread(target=_bg_chat, daemon=True).start()
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SERVER VƏ ZAMANLANMIŞ HESABATLAR
+#  SERVER, WEBHOOK VƏ BAŞLANĞIC (ZİREHLİ BAĞLANTI)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/", methods=["GET"])
-def health_check(): return "M.Genat 4.0 Pro Panel — Live ✅", 200
+def health_check(): 
+    return "M.Genat 4.0 Pro Panel — Live ✅", 200
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    if not TELEGRAM_TOKEN: return "no token", 400
-    raw  = flask_request.get_data(as_text=True)
-    upd  = telebot.types.Update.de_json(raw)
-    bot.process_new_updates([upd])
-    return "ok", 200
+    if flask_request.headers.get('content-type') == 'application/json':
+        json_string = flask_request.get_data().decode('utf-8')
+        upd = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([upd])
+        return '', 200
+    return 'Forbidden', 403
 
 def _sched_wrapper(report_type: str) -> None:
     try: generate_report(report_type, CHAT_ID, None) # Zamanlanmışlar həmişə Ümumi (Hakim) olur
@@ -379,15 +381,25 @@ def schedule_loop() -> None:
         schedule.run_pending()
         time.sleep(30)
 
-def setup_webhook() -> None:
-    if not TELEGRAM_TOKEN or not WEBHOOK_URL: return
-    wh_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
+def setup_connection() -> None:
+    """Telegram ilə bağlantını zorla təmizləyib yenidən qurur."""
     try:
-        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook", json={"url": wh_url, "drop_pending_updates": True}, timeout=15)
-        log.info("Webhook quruldu" if r.json().get("ok") else f"Webhook xətası: {r.json()}")
-    except Exception as e: log.error("Webhook xəta: %s", e)
+        # ƏN VACİB ADDIM: Köhnə yaddaşı və asılı qalmış mesajları silirik!
+        bot.remove_webhook()
+        time.sleep(1)
+        log.info("Köhnə Telegram bağlantısı təmizləndi.")
+        
+        if WEBHOOK_URL:
+            wh_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
+            bot.set_webhook(url=wh_url, drop_pending_updates=True)
+            log.info(f"✅ Webhook yenidən quruldu: {wh_url}")
+        else:
+            log.warning("⚠️ WEBHOOK_URL yoxdur. Polling rejimə keçilir...")
+            threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    except Exception as e:
+        log.error(f"Bağlantı xətası: {e}")
 
 if __name__ == "__main__":
-    setup_webhook()
+    setup_connection()
     threading.Thread(target=schedule_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT, debug=False)
