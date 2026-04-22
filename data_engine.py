@@ -526,6 +526,7 @@ class MasterAgent:
             "top_signals":  top5,
             "master_ok":    len(combined) > 0,
         }
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  MEMORY AGENT (RAG - Dərin Yaddaş)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -582,7 +583,7 @@ class MemoryAgent:
         return compiled_text
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AGGREGATOR (Hakim və Yaddaş daxil)
+#  AGGREGATOR (Hakim, Yaddaş və Korelyasiya daxil)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def aggregate_context(
@@ -595,14 +596,19 @@ def aggregate_context(
 
     log.info("Engine → %s", ", ".join(s.upper() for s in symbols))
 
+    # YENİ (CƏRRAHİYYƏ 1): Görünməz İplər (Korelyasiya) - DXY və Qızılı gizlicə əlavə edirik
+    macro_symbols = ["DX-Y.NYB", "GC=F"] 
+    combined_symbols = list(set([s.upper() for s in symbols] + macro_symbols))
+
     scout  = ScoutAgent()
     master = MasterAgent(cryptopanic_token)
-    memory = MemoryAgent() # YENİ: Yaddaş agenti işə düşür
+    memory = MemoryAgent() 
 
-    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="engine") as pool: # 2-dən 3-ə qaldırdıq
-        fs = pool.submit(scout.scan_multiple, [s.upper() for s in symbols])
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="engine") as pool: 
+        # İndi Scout həm sənin istədiyin (məs: BTC), həm də DXY-ni skan edəcək
+        fs = pool.submit(scout.scan_multiple, combined_symbols)
         fm = pool.submit(master.collect, news_currencies)
-        fmem = pool.submit(memory.read_reports) # YENİ: PDF-ləri arxa fonda oxuyur
+        fmem = pool.submit(memory.read_reports)
 
         try:
             scout_res = fs.result(timeout=THREAD_TIMEOUT * 2)
@@ -630,7 +636,7 @@ def aggregate_context(
         "scout_ok":        any(r.get("scout_ok", False) for r in scout_res),
         "crypto_news_ok":  len(master_res.get("crypto_news", [])) > 0,
         "macro_news_ok":   len(master_res.get("macro_news",  [])) > 0,
-        "memory_ok":       len(memory_res) > 50, # YENİ
+        "memory_ok":       len(memory_res) > 50, 
         "symbols_scanned": [r.get("symbol") for r in scout_res],
         "tfs_available":   list(SCOUT_TIMEFRAMES),
     }
@@ -644,15 +650,16 @@ def aggregate_context(
     return {
         "engine":       "M.Genat 4.0 Pro",
         "generated_at": _utc_now(),
+        # Sənə sadəcə öz axtardığın tickerlərin siyahısını göstəririk ki, beynin qarışmasın
         "scout":        {"symbols": symbols, "results": scout_res},
         "master":       master_res,
-        "memory":       memory_res, # YENİ: PDF datası əlavə olundu
+        "memory":       memory_res, 
         "data_quality": quality,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROMPT BUILDER (Judge Məntiqi ilə)
+#  PROMPT BUILDER (Judge & Korelyasiya Məntiqi ilə)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_gemini_prompt(context: dict) -> str:
@@ -700,10 +707,9 @@ TF-LƏR   : {tfs_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MÜTLƏQ QAYDALARIN (Zero Hallucination Protocol):
-1. Heç bir qiyməti, rəqəmi uydurma. YALNIZ aşağıdakı JSON-dakı \
-faktiki API datasına istinad et.
+1. Heç bir qiyməti, rəqəmi uydurma. YALNIZ aşağıdakı JSON-dakı faktiki API datasına istinad et.
 2. [HAKİM MƏNTİQİ]: Əgər Scout "Al" deyirsə, amma Master xəbərləri (və ya Memory hesabatları) böhran siqnalı verirsə, sən Hakimsən! Ziddiyyəti açıqla və riskin çox olduğunu bildir.
-3. Yaddaşdakı (Memory) hesabatlarda xüsusi bir proqnoz (məs: BlackRock hədəfi) varsa, mütləq bugünkü qiymətlə müqayisə et.
+3. [KORELYASİYA MƏNTİQİ]: JSON-da gizli şəkildə DXY (Dollar İndeksi - DX-Y.NYB) və Qızıl (GC=F) dataları var. Əsas aktivin vəziyyətini mütləq DXY və Qızılın trendi ilə müqayisə et (məs: "DXY qalxır, bu aktiv üçün riskdir").
 4. Volume SPIKE varsa — anomaliyanı qeyd et.
 
 --- CANLI DATA (JSON) ---
@@ -719,8 +725,8 @@ Hər TF üçün: Qiymət · RSI zonu · EMA mövqeyi · Volume statusu (Xüsusil
 ## 🌍 MASTER & MEMORY ANALİZİ (İnstitusional Düşüncə)
 Xəbərlərdən və JSON-dakı "memory" (Yaddaş) bloku daxilindəki sənədlərdən çıxan əsas qlobal mənzərə. İnstitusional oyunçular bazara necə baxır? (Yaddaşdakı hesabatları xüsusi qeyd et).
 
-## ⚖️ JUDGE: ÇARPAZ TOQQUŞMA
-Scout-un rəqəmləri ilə Master-in xəbərləri toqquşurmu? (Məsələn: Texniki yüksəliş + Pis xəbər = Bear Trap ola bilər). Ziddiyyət və ya tam uzlaşma (Confluence) varmı?
+## ⚖️ JUDGE: ÇARPAZ TOQQUŞMA VƏ KORELYASİYA
+Scout-un rəqəmləri ilə Master-in xəbərləri toqquşurmu? DXY (Dollar) və Qızılın hərəkəti sənin əsas aktivinə necə təsir edir? Ziddiyyət və ya tam uzlaşma (Confluence) varmı?
 
 ## 📊 SENARYO MATRİSİ
 | Senaryo    | Tetikləyici Şərt            | Hədəf (EMA-dan) | Ehtimal |
