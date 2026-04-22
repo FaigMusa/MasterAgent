@@ -362,11 +362,20 @@ def health_check():
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
+    # 🚨 RADAR BURADA İŞƏ DÜŞÜR: Qapıya kimsə yaxınlaşan kimi log-a yazır
+    log.info("📬 QAPI DÖYÜLDÜ: Webhook endpoint-ə kimsə müraciət etdi!") 
+    
     if flask_request.headers.get('content-type') == 'application/json':
         json_string = flask_request.get_data().decode('utf-8')
+        
+        # Gələn mesajın nə olduğunu (ilk 100 hərfini) oxuyub çap edirik
+        log.info(f"📩 TELEGRAM-DAN SİQNAL: {json_string[:100]}...")
+        
         upd = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([upd])
         return '', 200
+        
+    log.warning("⚠️ Webhook-a JSON olmayan fərqli bir sorğu gəldi!")
     return 'Forbidden', 403
 
 def _sched_wrapper(report_type: str) -> None:
