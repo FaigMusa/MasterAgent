@@ -1,12 +1,12 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║           M.Genat 3.1 Pro  ·  data_engine.py                               ║
+║            M.Genat 4.0 Pro  ·  data_engine.py  (Zirehli Versiya)             ║
 ║                                                                              ║
-║   SCOUT  →  Binance / yfinance · 4 TF · RSI · EMA · Volume Spike           ║
-║   MASTER →  CryptoPanic · RSS (Yahoo/CNBC/Reuters…) · Big-Fish filter      ║
-║   ENGINE →  aggregate_context()  ·  build_gemini_prompt()                  ║
+║   SCOUT  →  Binance (Vision) / yfinance · 4 TF · RSI · EMA · Volume Spike    ║
+║   MASTER →  CryptoPanic · RSS (Yahoo/CNBC/Reuters…) · Big-Fish filter        ║
+║   ENGINE →  aggregate_context()  ·  build_gemini_prompt()                    ║
 ║                                                                              ║
-║   Python 3.11+  ·  pip install requests yfinance ta pandas feedparser      ║
+║   Python 3.11+  ·  pip install requests yfinance ta pandas feedparser        ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -38,7 +38,8 @@ log = logging.getLogger(__name__)
 #  SABITLƏR
 # ══════════════════════════════════════════════════════════════════════════════
 
-BINANCE_BASE     = "https://api.binance.com"
+# MƏRHƏLƏ 0 FİX: ABŞ IP-lərində 451 xətası almamaq üçün qlobal API-yə keçid.
+BINANCE_BASE     = "https://data-api.binance.vision" 
 CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1"
 HTTP_TIMEOUT     = 12
 THREAD_TIMEOUT   = 30
@@ -65,20 +66,16 @@ MASTER_RSS_FEEDS = [
 ]
 
 BIG_FISH_KEYWORDS: dict[str, int] = {
-    # Institusional — ağırlıq 3
     "jpmorgan": 3, "blackrock": 3, "goldman sachs": 3, "goldman": 2,
     "vanguard": 2, "fidelity": 2, "morgan stanley": 2, "citadel": 2,
     "bridgewater": 2, "berkshire": 2, "ray dalio": 2, "warren buffett": 2,
-    # Monetar — ağırlıq 3
     "federal reserve": 3, "fed": 3, "fomc": 3,
     "rate hike": 3, "rate cut": 3, "interest rate": 2,
     "inflation": 2, "cpi": 2, "ppi": 2, "gdp": 2, "recession": 2,
     "yield curve": 3, "treasury": 2, "dollar index": 3, "dxy": 3,
     "ecb": 2, "boj": 2, "imf": 2,
-    # Geopolitik — ağırlıq 3
     "hormuz": 3, "middle east": 3, "taiwan": 3, "china": 2,
     "sanctions": 2, "opec": 2, "war": 2, "conflict": 2,
-    # Texnoloji/Kripto — ağırlıq 2
     "semiconductor": 2, "chip": 2, "nvidia": 2, "ai investments": 2,
     "bitcoin etf": 3, "spot etf": 3, "crypto": 1, "sec": 2,
 }
@@ -153,11 +150,6 @@ def _safe_round(val: Any, n: int = 4) -> Optional[float]:
 
 
 def _is_crypto(symbol: str) -> bool:
-    """
-    BTCUSDT, ETHUSDT → True (Binance)
-    SPY, GLD, AAPL   → False (yfinance)
-    BTC-USD           → False (tire var → yfinance formatı)
-    """
     s = symbol.upper().strip()
     if any(s.endswith(sfx) for sfx in ("USDT", "BUSD", "BTC", "ETH", "BNB", "USDC")):
         return True
@@ -216,31 +208,29 @@ class ScoutAgent:
         return df.dropna(subset=["close"])
 
     def _yf_ohlcv(self, symbol: str, iv: str, period: str) -> pd.DataFrame:
-        df = yf.download(symbol, period=period, interval=iv,
+        # MƏRHƏLƏ 0 FİX: Kripto "yfinance" fallback formatı (BTCUSDT -> BTC-USD)
+        clean_symbol = symbol
+        if _is_crypto(symbol) and "USDT" in symbol:
+             clean_symbol = symbol.replace("USDT", "-USD")
+
+        df = yf.download(clean_symbol, period=period, interval=iv,
                          progress=False, auto_adjust=True)
         if df.empty:
-            raise ValueError(f"yfinance boş [{symbol} {iv}]")
+            raise ValueError(f"yfinance boş [{clean_symbol} {iv}]")
 
-        # MultiIndex düzəltmə
+        # MƏRHƏLƏ 0 FİX: Pandas MultiIndex 'arg must be a list' qatili
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [
-                "_".join(str(x) for x in col if x).lower().split("_")[0]
-                for col in df.columns
-            ]
-        else:
-            df.columns = [c.lower() for c in df.columns]
+            # Yalnız birinci səviyyəni götürürük (Open, High, Low, Close, Volume)
+            df.columns = df.columns.get_level_values(0)
+        
+        # Sütunları kiçik hərfə çevir
+        df.columns = [str(c).lower() for c in df.columns]
 
+        # Datetime index-i sütuna çevir
         df.index.name = "open_time"
         df = df.reset_index()
         df["open_time"] = pd.to_datetime(df["open_time"], utc=True, errors="coerce")
 
-        # Sütun adlarını normallaşdır
-        remap = {}
-        for need in ("open", "high", "low", "close", "volume"):
-            found = next((c for c in df.columns if need in c.lower()), None)
-            if found:
-                remap[found] = need
-        df = df.rename(columns=remap)
         for c in ("open", "high", "low", "close", "volume"):
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -292,10 +282,22 @@ class ScoutAgent:
 
     def _snap(self, symbol: str, tf: str, is_crypto: bool) -> TimeframeSnapshot:
         b_iv, yf_iv, yf_period = SCOUT_TIMEFRAMES[tf]
+        source = "unknown"
+        df = pd.DataFrame()
         try:
             if is_crypto:
-                df     = self._binance_klines(symbol, b_iv)
-                source = "binance"
+                try:
+                    df     = self._binance_klines(symbol, b_iv)
+                    source = "binance"
+                except Exception as e:
+                    # MƏRHƏLƏ 0 FİX: Binance 451 verərsə, yfinance-ə fallback et
+                    log.warning(f"Binance fail, yfinance-ə keçilir: {symbol}. Səbəb: {e}")
+                    if tf == "4h":
+                        _, iv1h, p1h = SCOUT_TIMEFRAMES["1h"]
+                        df = self._resample_4h(self._yf_ohlcv(symbol, iv1h, p1h))
+                    else:
+                        df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+                    source = "yfinance (fallback)"
             else:
                 if tf == "4h":
                     _, iv1h, p1h = SCOUT_TIMEFRAMES["1h"]
@@ -330,7 +332,7 @@ class ScoutAgent:
         except Exception as exc:
             log.warning("Scout TF xəta [%s %s]: %s", symbol, tf, exc)
             return TimeframeSnapshot(
-                tf=tf, source="binance" if is_crypto else "yfinance",
+                tf=tf, source=source,
                 last_close=None, last_candle_time=_utc_now(),
                 rsi_14=None, ema_50=None, ema_100=None, ema_200=None,
                 volume_last=None, volume_avg24=None, volume_status="UNKNOWN",
@@ -340,7 +342,6 @@ class ScoutAgent:
     # ── Açıq API ──────────────────────────────────────────────────────────────
 
     def scan(self, symbol: str) -> ScoutResult:
-        """Bir aktivi 4 TF-də paralel skan edir."""
         sym       = symbol.upper()
         crypto    = _is_crypto(sym)
         tfs       = list(SCOUT_TIMEFRAMES)
@@ -371,7 +372,6 @@ class ScoutAgent:
                            timeframes=snaps, scout_ok=ok, errors=errors)
 
     def scan_multiple(self, symbols: list[str]) -> list[dict]:
-        """Bir neçə aktivi paralel skan edir, dict siyahısı qaytarır."""
         results: list[dict] = []
         workers = min(len(symbols), 6)
         with ThreadPoolExecutor(max_workers=workers,
@@ -537,21 +537,6 @@ def aggregate_context(
     cryptopanic_token: str,
     news_currencies:   str = "BTC,ETH",
 ) -> dict:
-    """
-    Scout + Master-i paralel işlədib vahid JSON sözlüyünə yığır.
-
-    Args:
-        symbols           — ['BTCUSDT', 'ETHUSDT', 'SPY']
-        cryptopanic_token — CryptoPanic API açarı
-        news_currencies   — CryptoPanic filtr ('BTC,ETH')
-
-    Returns:
-        engine · generated_at · scout · master · data_quality
-
-    Raises:
-        ValueError  — symbols boşdursa
-        RuntimeError — bütün mənbələr uğursuzsa
-    """
     if not symbols:
         raise ValueError("Ən azı bir ticker tələb olunur.")
 
@@ -595,7 +580,7 @@ def aggregate_context(
             "Bütün data mənbələri uğursuz oldu. Gemini-yə boş prompt göndərilmir.")
 
     return {
-        "engine":       "M.Genat 3.1 Pro",
+        "engine":       "M.Genat 4.0 Pro",
         "generated_at": _utc_now(),
         "scout":        {"symbols": symbols, "results": scout_res},
         "master":       master_res,
@@ -608,12 +593,6 @@ def aggregate_context(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_gemini_prompt(context: dict) -> str:
-    """
-    aggregate_context() çıxışından M.Genat 3.1 Pro Gemini promptu yaradır.
-
-    Raises:
-        ValueError — context boşdursa və ya keyfiyyət sıfırdırsa
-    """
     if not context:
         raise ValueError("Boş kontekst. Prompt yaradılmır.")
 
@@ -623,9 +602,8 @@ def build_gemini_prompt(context: dict) -> str:
                 quality.get("macro_news_ok")]):
         raise ValueError("Bütün data mənbələri uğursuz. Boş prompt göndərilmir.")
 
-    json_block = json.dumps(context, ensure_ascii=False) # indent=2 silindi
+    json_block = json.dumps(context, ensure_ascii=False)
 
-    # Xəbərdarlıq bloku
     warns = []
     if not quality.get("scout_ok"):
         warns.append("⚠️ Scout texniki datası əlçatmaz — RSI/EMA/Volume məhduddur.")
@@ -635,7 +613,6 @@ def build_gemini_prompt(context: dict) -> str:
         warns.append("⚠️ Makro RSS lenti boşdur.")
     warn_block = ("\n[SİSTEM XƏBƏRDARLIĞI]\n" + "\n".join(warns) + "\n") if warns else ""
 
-    # Sessiya
     h = datetime.now(timezone.utc).hour
     if   4  <= h < 8:  session = "Asiya Bağlanışı / Avropa Açılışı"
     elif 8  <= h < 12: session = "London Açılışı"
@@ -646,7 +623,7 @@ def build_gemini_prompt(context: dict) -> str:
     symbols_str = ", ".join(str(s) for s in quality.get("symbols_scanned", ["N/A"]))
     tfs_str     = " · ".join(quality.get("tfs_available", []))
 
-    return f"""Sən M.Genat 3.1 Pro-san — eyni anda iki fərqli şəxsiyyəti özündə birləşdirən \
+    return f"""Sən M.Genat 4.0 Pro-san — eyni anda iki fərqli şəxsiyyəti özündə birləşdirən \
 peşəkar maliyyə analitikisən:
 
 🔬 SCOUT (Day Trader) — 5m/1h/4h/1d RSI · EMA crossları · Volume Spike real-time.
@@ -658,9 +635,9 @@ TİKERLƏR : {symbols_str}
 TF-LƏR   : {tfs_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-MÜTLƏQ QAYDALARIN:
+MÜTLƏQ QAYDALARIN (Zero Hallucination Protocol):
 1. Heç bir qiyməti, rəqəmi, tarixi uydurma. YALNIZ aşağıdakı JSON-dakı \
-faktiki API datasına istinad et.
+faktiki API datasına istinad et. Əgər data yoxdursa "Məlumat yoxdur" yaz.
 2. Scout datası (RSI, EMA, Volume) ilə Master datası (FED, institusional, \
 geopolitik) arasında zəncirvari (causal chain) bağlantı qur.
 3. JPMorgan / BlackRock / Goldman / FED / Dollar Index / Geopolitik xəbərləri \
@@ -673,7 +650,7 @@ varsa — hesabatın mərkəzinə o məlumatları qoy.
 --- DATA SONU ---
 
 İndi bu real məlumatlara əsasən {session} üçün Azərbaycan dilində \
-M.Genat 3.1 Pro Hesabatını hazırla:
+M.Genat 4.0 Pro Hesabatını hazırla:
 
 ## 🔬 SCOUT ANALİZİ
 
@@ -716,7 +693,7 @@ Hər addımda JSON-dakı real dataya istinad et.
 
 ## 📊 SENARYO MATRİSİ
 
-| Senaryo    | Tetikləyici Şərt           | Hədəf (EMA-dan) | Ehtimal |
+| Senaryo    | Tetikləyici Şərt            | Hədəf (EMA-dan) | Ehtimal |
 |------------|----------------------------|-----------------|---------|
 | 🟢 Bullish | JSON-dakı datadan doldur   | uydurma         | ?%      |
 | 🔴 Bearish | JSON-dakı datadan doldur   | uydurma         | ?%      |
