@@ -526,10 +526,63 @@ class MasterAgent:
             "top_signals":  top5,
             "master_ok":    len(combined) > 0,
         }
+# ══════════════════════════════════════════════════════════════════════════════
+#  MEMORY AGENT (RAG - Dərin Yaddaş)
+# ══════════════════════════════════════════════════════════════════════════════
+import os
+import PyPDF2
 
+class MemoryAgent:
+    """
+    knowledge_base/ qovluğundakı PDF və TXT hesabatları oxuyur.
+    M.Genat-a institusional strategiyaları 'əzbərlədir'.
+    """
+    def __init__(self, kb_path="knowledge_base"):
+        self.kb_path = kb_path
+        if not os.path.exists(self.kb_path):
+            os.makedirs(self.kb_path)
+            log.info(f"📁 Qovluq yaradıldı: {self.kb_path}. PDF-ləri bura atın.")
+
+    def read_reports(self, max_chars=15000) -> str:
+        """Qovluqdakı sənədləri oxuyur və birləşdirir."""
+        compiled_text = ""
+        
+        if not os.path.exists(self.kb_path):
+            return "Dərin yaddaş qovluğu tapılmadı."
+
+        files = [f for f in os.listdir(self.kb_path) if f.endswith(('.pdf', '.txt'))]
+        if not files:
+            return "Məlumat bazasında aktiv hesabat yoxdur."
+
+        log.info(f"Memory → {len(files)} sənəd oxunur: {', '.join(files)}")
+
+        for file in files:
+            file_path = os.path.join(self.kb_path, file)
+            try:
+                if file.endswith('.pdf'):
+                    with open(file_path, 'rb') as f:
+                        reader = PyPDF2.PdfReader(f)
+                        text = f"\n--- SƏNƏD: {file} ---\n"
+                        # İlk 3 səhifəni oxuyuruq (Token limitinə qənaət üçün)
+                        for page in reader.pages[:3]: 
+                            text += page.extract_text() + "\n"
+                        compiled_text += text
+                
+                elif file.endswith('.txt'):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        compiled_text += f"\n--- SƏNƏD: {file} ---\n" + f.read(5000) + "\n"
+            
+            except Exception as e:
+                log.error(f"Sənəd oxunma xətası [{file}]: {e}")
+
+        # Əgər mətn çox uzundursa, modelin beyni qarışmasın deyə kəsirik
+        if len(compiled_text) > max_chars:
+            compiled_text = compiled_text[:max_chars] + "\n...[Mətn çox uzun olduğu üçün kəsildi]..."
+            
+        return compiled_text
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AGGREGATOR
+#  AGGREGATOR (Hakim və Yaddaş daxil)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def aggregate_context(
@@ -544,10 +597,12 @@ def aggregate_context(
 
     scout  = ScoutAgent()
     master = MasterAgent(cryptopanic_token)
+    memory = MemoryAgent() # YENİ: Yaddaş agenti işə düşür
 
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="engine") as pool:
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="engine") as pool: # 2-dən 3-ə qaldırdıq
         fs = pool.submit(scout.scan_multiple, [s.upper() for s in symbols])
         fm = pool.submit(master.collect, news_currencies)
+        fmem = pool.submit(memory.read_reports) # YENİ: PDF-ləri arxa fonda oxuyur
 
         try:
             scout_res = fs.result(timeout=THREAD_TIMEOUT * 2)
@@ -564,11 +619,18 @@ def aggregate_context(
                 "crypto_news": [], "macro_news": [],
                 "top_signals": [], "master_ok": False,
             }
+            
+        try:
+            memory_res = fmem.result(timeout=THREAD_TIMEOUT)
+        except Exception as e:
+            log.error("Memory engine xəta: %s", e)
+            memory_res = "Yaddaş oxuna bilmədi."
 
     quality = {
         "scout_ok":        any(r.get("scout_ok", False) for r in scout_res),
         "crypto_news_ok":  len(master_res.get("crypto_news", [])) > 0,
         "macro_news_ok":   len(master_res.get("macro_news",  [])) > 0,
+        "memory_ok":       len(memory_res) > 50, # YENİ
         "symbols_scanned": [r.get("symbol") for r in scout_res],
         "tfs_available":   list(SCOUT_TIMEFRAMES),
     }
@@ -584,12 +646,13 @@ def aggregate_context(
         "generated_at": _utc_now(),
         "scout":        {"symbols": symbols, "results": scout_res},
         "master":       master_res,
+        "memory":       memory_res, # YENİ: PDF datası əlavə olundu
         "data_quality": quality,
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROMPT BUILDER
+#  PROMPT BUILDER (Judge Məntiqi ilə)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_gemini_prompt(context: dict) -> str:
@@ -623,11 +686,12 @@ def build_gemini_prompt(context: dict) -> str:
     symbols_str = ", ".join(str(s) for s in quality.get("symbols_scanned", ["N/A"]))
     tfs_str     = " · ".join(quality.get("tfs_available", []))
 
-    return f"""Sən M.Genat 4.0 Pro-san — eyni anda iki fərqli şəxsiyyəti özündə birləşdirən \
-peşəkar maliyyə analitikisən:
+    return f"""Sən M.Genat 4.0 Pro-san — eyni anda 3 fərqli şəxsiyyəti özündə birləşdirən \
+peşəkar maliyyə ekosistemisən (Multi-Agent):
 
 🔬 SCOUT (Day Trader) — 5m/1h/4h/1d RSI · EMA crossları · Volume Spike real-time.
-🌍 MASTER (Macro Investor) — FED/ECB qərarları · JPMorgan · BlackRock · Goldman · Geopolitik.
+🌍 MASTER (Macro Investor) — FED/ECB qərarları · CryptoPanic · Geopolitik xəbərlər.
+🧠 JUDGE & MEMORY (Hedge Fund Manager) — Xüsusi bazadakı institusional PDF-ləri oxuyur və texniki xəbərlərlə toqquşdurur.
 {warn_block}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SESSIYA  : {session}
@@ -636,14 +700,11 @@ TF-LƏR   : {tfs_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MÜTLƏQ QAYDALARIN (Zero Hallucination Protocol):
-1. Heç bir qiyməti, rəqəmi, tarixi uydurma. YALNIZ aşağıdakı JSON-dakı \
-faktiki API datasına istinad et. Əgər data yoxdursa "Məlumat yoxdur" yaz.
-2. Scout datası (RSI, EMA, Volume) ilə Master datası (FED, institusional, \
-geopolitik) arasında zəncirvari (causal chain) bağlantı qur.
-3. JPMorgan / BlackRock / Goldman / FED / Dollar Index / Geopolitik xəbərləri \
-varsa — hesabatın mərkəzinə o məlumatları qoy.
-4. Volume SPIKE varsa — anomaliyanı mütləq qeyd et, makro səbəbini araşdır.
-5. 4 TF (5m·1h·4h·1d) eyni istiqamətdədirsə → "Trend Confluence" qeyd et.
+1. Heç bir qiyməti, rəqəmi uydurma. YALNIZ aşağıdakı JSON-dakı \
+faktiki API datasına istinad et.
+2. [HAKİM MƏNTİQİ]: Əgər Scout "Al" deyirsə, amma Master xəbərləri (və ya Memory hesabatları) böhran siqnalı verirsə, sən Hakimsən! Ziddiyyəti açıqla və riskin çox olduğunu bildir.
+3. Yaddaşdakı (Memory) hesabatlarda xüsusi bir proqnoz (məs: BlackRock hədəfi) varsa, mütləq bugünkü qiymətlə müqayisə et.
+4. Volume SPIKE varsa — anomaliyanı qeyd et.
 
 --- CANLI DATA (JSON) ---
 {json_block}
@@ -652,65 +713,29 @@ varsa — hesabatın mərkəzinə o məlumatları qoy.
 İndi bu real məlumatlara əsasən {session} üçün Azərbaycan dilində \
 M.Genat 4.0 Pro Hesabatını hazırla:
 
-## 🔬 SCOUT ANALİZİ
+## 🔬 SCOUT ANALİZİ (Texniki Kəşfiyyat)
+Hər TF üçün: Qiymət · RSI zonu · EMA mövqeyi · Volume statusu (Xüsusilə Spike olanlar).
 
-**Multi-Timeframe Cədvəli**
-Hər TF üçün: Qiymət · RSI zonu · EMA mövqeyi · Volume statusu.
+## 🌍 MASTER & MEMORY ANALİZİ (İnstitusional Düşüncə)
+Xəbərlərdən və JSON-dakı "memory" (Yaddaş) bloku daxilindəki sənədlərdən çıxan əsas qlobal mənzərə. İnstitusional oyunçular bazara necə baxır? (Yaddaşdakı hesabatları xüsusi qeyd et).
 
-**Trend Confluence**
-TF-lər eyni istiqamətdədirsə → güclü siqnal. Fərqlidirsə → qeyri-müəyyənlik.
-
-**Volume Spike Analizi**
-SPIKE varsa: həcm ortalamanın neçə qatıdır? Makro/korporativ səbəbi?
-
-**EMA Xəritəsi**
-Qiymət EMA50/100/200-ün nə tərəfindədir? Bullish/Bearish alignment?
-
----
-
-## 🌍 MASTER ANALİZİ
-
-**İnstitusional Siqnallar**
-JPMorgan · BlackRock · Goldman · Vanguard hərəkətləri (varsa). Bazara təsiri?
-
-**Makro & Monetar Mühit**
-FED/ECB qərarları · faiz · inflyasiya · DXY dinamikası. Aktivə təsiri?
-
-**Geopolitik Risk**
-Orta Şərq · Tayvan · Hormuz · sanksiyalar — potensial şok effekti?
-
-**Kripto Sentiment**
-CryptoPanic xəbərlərinin ümumi tonu: Bullish / Bearish / Mixed.
-
----
-
-## ⛓️ ZƏNCİRVARİ ƏLAQƏ
-
-Makro Katalizator → İnstitusional Mövqe → Texniki Siqnal → Qiymət Hərəkəti
-Hər addımda JSON-dakı real dataya istinad et.
-
----
+## ⚖️ JUDGE: ÇARPAZ TOQQUŞMA
+Scout-un rəqəmləri ilə Master-in xəbərləri toqquşurmu? (Məsələn: Texniki yüksəliş + Pis xəbər = Bear Trap ola bilər). Ziddiyyət və ya tam uzlaşma (Confluence) varmı?
 
 ## 📊 SENARYO MATRİSİ
-
 | Senaryo    | Tetikləyici Şərt            | Hədəf (EMA-dan) | Ehtimal |
 |------------|----------------------------|-----------------|---------|
 | 🟢 Bullish | JSON-dakı datadan doldur   | uydurma         | ?%      |
 | 🔴 Bearish | JSON-dakı datadan doldur   | uydurma         | ?%      |
 | 🟡 Base    | JSON-dakı datadan doldur   | uydurma         | ?%      |
 
-Qiymət hədəflərini YALNIZ JSON-dakı EMA dəyərlərindən çıxar.
-
----
-
-## 💼 HEDGE-FUND TÖVSİYƏSİ
-
+## 💼 HEDGE-FUND YEKUN TÖVSİYƏSİ
 Mövqe: Alış / Satış / Gözlə
-Əsas Səbəb: Scout + Master sintezi (2-3 cümlə)
-Risk Faktoru: 1–5 (1=minimal, 5=yüksək)
-Növbəti Trigger: hansı xəbər/indikator mövqeyi dəyişdirər?
+Əsas Səbəb: Judge Agentin yekun hökmü.
+Risk Faktoru: 1–5
+Növbəti Trigger: Hansı data/xəbər mövqeyi dəyişər?
 
-⚠️ Yalnız JSON-dakı faktiki API datasına istinad et. Kənar fərziyyə qadağandır."""
+⚠️ Yalnız JSON-dakı dataya istinad et. Uydurma qadağandır."""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
