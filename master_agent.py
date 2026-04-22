@@ -1,9 +1,9 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║           M.Genat 3.1 Pro  ·  master_agent.py                              ║
+║            M.Genat 4.0 Pro  ·  master_agent.py (Terminal İnterfeysi)         ║
 ║                                                                              ║
-║   Telegram Bot · Flask Webhook · Gemini 1.5 Flash                          ║
-║   Zamanlanmış hesabatlar · Scout/Master analiz · Portfel idarəetməsi       ║
+║   Telegram Bot · Flask Webhook · Gemini API                                  ║
+║   Zamanlanmış hesabatlar · Scout/Master analiz · Portfel idarəetməsi         ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 Mühit dəyişənləri (.env / Render dashboard):
@@ -98,22 +98,20 @@ def gemini_call(prompt: str,
 
     client  = _get_gemini()
     wait    = 5  # ilk gözləmə (saniyə)
-    last_error = "Bilinməyən xəta" # 🚨 XƏTANI TUTMAQ ÜÇÜN TƏLƏMİZ
+    last_error = "Bilinməyən xəta" 
 
     for attempt in range(1, retries + 1):
         try:
-            # Bəzi regionlarda və layihələrdə 'models/' prefixi mütləq tələb olunur
             model_name = model if model.startswith("models/") else f"models/{model}"
             
             resp = client.models.generate_content(
-                model=model_name, # Tam adı göndəririk: models/gemini-1.5-flash
+                model=model_name, 
                 contents=prompt,
             )
-            # Cavab məzmununu çıxar
             text = getattr(resp, "text", None)
             if text:
                 return text.strip()
-            # Alternativ struktur
+            
             if hasattr(resp, "candidates") and resp.candidates:
                 parts = resp.candidates[0].content.parts
                 if parts:
@@ -121,29 +119,25 @@ def gemini_call(prompt: str,
             return "⚠️ Gemini boş cavab qaytardı."
 
         except Exception as exc:
-            last_error = str(exc) # 🚨 XƏTANI BURADA YADDAŞA YAZIRIQ
+            last_error = str(exc) 
             err = last_error.lower()
             log.warning("Gemini cəhd %d/%d xəta: %s", attempt, retries, exc)
 
-            # Açar / icazə xətası
             if any(code in err for code in ("api_key", "400", "403", "invalid")):
                 return f"❌ Gemini API açarı xətası. Təfərrüat: {last_error}"
 
-            # Kvota / rate-limit xətası
             if any(code in err for code in ("429", "quota", "exhausted", "resource")):
                 if attempt < retries:
                     log.info("Kvota — %ds gözlənilir...", wait)
                     time.sleep(wait)
-                    wait *= 2   # eksponensial artım
+                    wait *= 2   
                 continue
 
-            # Şəbəkə/server xətası
             if attempt < retries:
                 time.sleep(wait)
                 wait *= 2
             continue
 
-    # 🚨 VƏ ƏN SONDA HƏQİQİ XƏTANI ÇAP EDİRİK
     return f"🚨 GİZLİ XƏTA AŞKARLANDI: {last_error}"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -153,18 +147,15 @@ def gemini_call(prompt: str,
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 app = Flask(__name__)
 
-_MAX_MSG = 4000   # Telegram 4096 hərflik limit; ehtiyatlı olmaq üçün 4000
-
+_MAX_MSG = 4000   
 
 def _plain(text: str) -> str:
-    """Markdown simvollarını kənara qoyur — sadə mətn göndərişi üçün."""
+    """Yalnız xəta olduqda və ya fallback vəziyyətində istifadə edilir."""
     for ch in ("**", "*", "`", "```", "_", "~", ">"):
         text = text.replace(ch, "")
     return text
 
-
 def _chunks(text: str, size: int = _MAX_MSG) -> list[str]:
-    """Uzun mətni Telegram limitinə uyğun parçalara bölür."""
     parts = []
     while len(text) > size:
         cut = text.rfind("\n", 0, size)
@@ -176,37 +167,36 @@ def _chunks(text: str, size: int = _MAX_MSG) -> list[str]:
         parts.append(text)
     return parts
 
-
-def safe_send(chat_id: str | int, text: str) -> None:
-    """Uzun mesajı parçalara bölüb sadə mətn kimi göndərir."""
-    plain_text = _plain(text)
-    for chunk in _chunks(plain_text):
+def safe_send(chat_id: str | int, text: str, parse_mode: str = None) -> None:
+    """Uzun mesajı Telegram limitinə uyğun bölür və Markdown dəstəkləyir."""
+    for chunk in _chunks(text):
         try:
-            bot.send_message(chat_id, chunk)
+            bot.send_message(chat_id, chunk, parse_mode=parse_mode)
         except Exception as e:
-            log.error("Telegram göndərmə xətası: %s", e)
+            log.error(f"Telegram format göndərmə xətası (parse_mode={parse_mode}): {e}. Sadə mətn kimi cəhd edilir.")
             try:
-                bot.send_message(chat_id, chunk[:400] + "\n...(kəsildi)")
+                # Markdown xəta verərsə, düz mətn kimi göndər
+                bot.send_message(chat_id, _plain(chunk))
             except Exception:
                 pass
 
-
-def safe_reply(message: telebot.types.Message, text: str) -> None:
-    plain_text = _plain(text)
-    for i, chunk in enumerate(_chunks(plain_text)):
+def safe_reply(message: telebot.types.Message, text: str, parse_mode: str = None) -> None:
+    for i, chunk in enumerate(_chunks(text)):
         try:
             if i == 0:
-                bot.reply_to(message, chunk)
+                bot.reply_to(message, chunk, parse_mode=parse_mode)
             else:
-                bot.send_message(message.chat.id, chunk)
+                bot.send_message(message.chat.id, chunk, parse_mode=parse_mode)
         except Exception as e:
-            log.error("Telegram cavab xətası: %s", e)
-
+            log.error(f"Telegram cavab xətası: {e}")
+            try:
+                bot.send_message(message.chat.id, _plain(chunk))
+            except Exception:
+                pass
 
 def _auth(message_or_chat_id) -> bool:
-    """Yalnız icazəli CHAT_ID-ə cavab verir."""
     if not CHAT_ID:
-        return True   # CHAT_ID təyin edilməyibsə hamıya açıqdır (test rejimi)
+        return True   
     cid = getattr(message_or_chat_id, "chat", None)
     cid = str(cid.id) if cid else str(message_or_chat_id)
     return cid == str(CHAT_ID)
@@ -217,15 +207,8 @@ def _auth(message_or_chat_id) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def generate_report(report_type: str = "ANİ ANALİZ",
-                    chat_id:     str | int = None) -> None:
-    """
-    Bütün addımları ardıcıl icra edir:
-      1. Portfeli oxu
-      2. data_engine.aggregate_context() — Scout + Master
-      3. data_engine.build_gemini_prompt() — prompt yarat
-      4. gemini_call() — analiz al
-      5. Telegram-a göndər
-    """
+                    chat_id:     str | int = None,
+                    custom_symbols: list[str] = None) -> None:
     target = chat_id or CHAT_ID
     if not target:
         log.error("CHAT_ID bilinmir — hesabat göndərilmir.")
@@ -234,33 +217,32 @@ def generate_report(report_type: str = "ANİ ANALİZ",
     log.info("Hesabat başladı: %s → chat %s", report_type, target)
 
     try:
-        # Portfeli thread-safe oxu
-        with _portfolio_lock:
-            symbols = DINAMIK_PORTFEL + STRATEJI_PORTFEL
+        # Portfeli təyin et (Xüsusi verilən yoxsa qlobal?)
+        if custom_symbols:
+            symbols = custom_symbols
+        else:
+            with _portfolio_lock:
+                symbols = DINAMIK_PORTFEL + STRATEJI_PORTFEL
 
         if not symbols:
-            safe_send(target, "⚠️ Portfel boşdur. 'skan əlavə et:BTCUSDT' komandasını istifadə et.")
+            safe_send(target, "⚠️ Portfel boşdur. Aktiv əlavə et.")
             return
 
-        # Məlumat toplama
+        # M.Genat 4.0 Data Toplama (RAG və Korelyasiya işə düşür)
         context = data_engine.aggregate_context(
             symbols=symbols,
             cryptopanic_token=CRYPTOPANIC_KEY,
             news_currencies="BTC,ETH",
         )
 
-        # Prompt yarat
         prompt = data_engine.build_gemini_prompt(context=context)
-
-        # Gemini analizi
         analysis = gemini_call(prompt)
 
-        # Göndər
-        header = f"🏛 {report_type} — M.Genat 3.1 Pro\n{'─'*40}\n"
-        safe_send(target, header + analysis)
+        # MƏRHƏLƏ 3 FİX: Qalın şriftlərlə və Markdownla göndər
+        header = f"🏛 **{report_type}** — M.Genat 4.0 Pro\n{'─'*40}\n"
+        safe_send(target, header + analysis, parse_mode="Markdown")
 
     except (ValueError, RuntimeError) as exc:
-        # data_engine tərəfindən atılan gözlənilən xətalar
         log.error("Hesabat data xətası: %s", exc)
         safe_send(target, f"⚠️ Data toplanarkən xəta:\n{str(exc)[:300]}")
     except Exception as exc:
@@ -276,7 +258,7 @@ def main_menu() -> InlineKeyboardMarkup:
     m = InlineKeyboardMarkup(row_width=2)
     m.row(
         InlineKeyboardButton("🔭 Kripto Radar",    callback_data="show_crypto"),
-        InlineKeyboardButton("🏛 Səhm Radar",     callback_data="show_stocks"),
+        InlineKeyboardButton("🏛 Səhm Radar",      callback_data="show_stocks"),
     )
     m.row(
         InlineKeyboardButton("📊 Anlıq Analiz",   callback_data="run_report"),
@@ -284,13 +266,13 @@ def main_menu() -> InlineKeyboardMarkup:
     )
     return m
 
-
 def help_text() -> str:
     return (
-        "📖 M.Genat 3.1 Pro — Komandalar\n"
+        "📖 *M.Genat 4.0 Pro — Komandalar*\n"
         "─────────────────────────────\n"
         "/start  /menu   — Ana panel\n"
-        "analiz          — Anlıq hesabat\n\n"
+        "/judge [Aktiv]  — Hakim Rejimi (Dərin Analiz + RAG)\n"
+        "analiz          — Ümumi portfel hesabatı\n\n"
         "── Kripto Radar ──\n"
         "skan əlavə et:BTCUSDT\n"
         "skan sil:BTCUSDT\n\n"
@@ -299,7 +281,7 @@ def help_text() -> str:
         "strat sil:SPY\n\n"
         "── Digər ──\n"
         "portfel         — Cari siyahı\n"
-        "(istənilən sual → Gemini-yə göndərilir)"
+        "(Sərbəst mətn → Gemini-yə sual kimi gedir)"
     )
 
 
@@ -318,23 +300,23 @@ def handle_callback(call: telebot.types.CallbackQuery) -> None:
     if data == "show_crypto":
         with _portfolio_lock:
             lst = list(DINAMIK_PORTFEL)
-        safe_send(cid, "🔭 Kripto Radar:\n" + (", ".join(lst) if lst else "(boş)"))
+        safe_send(cid, "🔭 *Kripto Radar:*\n" + (", ".join(lst) if lst else "(boş)"), parse_mode="Markdown")
 
     elif data == "show_stocks":
         with _portfolio_lock:
             lst = list(STRATEJI_PORTFEL)
-        safe_send(cid, "🏛 Səhm/ETF Radar:\n" + (", ".join(lst) if lst else "(boş)"))
+        safe_send(cid, "🏛 *Səhm/ETF Radar:*\n" + (", ".join(lst) if lst else "(boş)"), parse_mode="Markdown")
 
     elif data == "run_report":
-        safe_send(cid, "⏳ Məlumatlar toplanır... (15–30 saniyə)")
+        safe_send(cid, "⏳ *M.Genat 4.0 Pro:* Portfel dataları toplanır... (15–30 saniyə)", parse_mode="Markdown")
         threading.Thread(
             target=generate_report,
-            args=("ANİ ANALİZ", cid),
+            args=("ÜMUMİ PORTFEL ANALİZİ", cid),
             daemon=True,
         ).start()
 
     elif data == "show_help":
-        safe_send(cid, help_text())
+        safe_send(cid, help_text(), parse_mode="Markdown")
 
     try:
         bot.answer_callback_query(call.id)
@@ -351,17 +333,36 @@ def handle_message(message: telebot.types.Message) -> None:
     lower = text.lower()
     cid   = message.chat.id
 
+    # ── M.Genat 4.0 Yeni Komandalar ────────────────────────────────────────
+    if lower.startswith("/judge"):
+        symbols_str = text.replace("/judge", "").strip()
+        custom_symbols = None
+        if symbols_str:
+            custom_symbols = [s.strip().upper() for s in symbols_str.split(",")]
+        
+        safe_reply(message, "⏳ ⚖️ *HAKİM REJİMİ:* Datalar, arxivlər (RAG) və makro korelyasiyalar (DXY) oxunur...", parse_mode="Markdown")
+        threading.Thread(
+            target=generate_report,
+            args=(f"HAKİM ANALİZİ ({symbols_str or 'Portfel'})", cid, custom_symbols),
+            daemon=True,
+        ).start()
+        return
+
+    if lower.startswith("/quick"):
+        safe_reply(message, "⚡ Quick modu (lite versiya) növbəti yeniləmədə aktivləşəcək. Dərin analiz üçün `/judge [Aktiv]` yaz.")
+        return
+
     # ── Menyu/Komanda ──────────────────────────────────────────────────────
     if lower in ("/start", "/menu", "menu", "radar"):
-        bot.send_message(cid, "🎛 M.Genat 3.1 Pro Paneli", reply_markup=main_menu())
+        bot.send_message(cid, "🎛 **M.Genat 4.0 Pro Paneli**", reply_markup=main_menu(), parse_mode="Markdown")
         return
 
     if lower in ("/help", "yardım", "help"):
-        safe_send(cid, help_text())
+        safe_send(cid, help_text(), parse_mode="Markdown")
         return
 
     if lower in ("analiz", "/analiz", "hesabat"):
-        safe_reply(message, "⏳ Məlumatlar toplanır... (15–30 saniyə)")
+        safe_reply(message, "⏳ *M.Genat 4.0 Pro:* Datalar toplanır...", parse_mode="Markdown")
         threading.Thread(
             target=generate_report,
             args=("ANİ ANALİZ", cid),
@@ -374,8 +375,8 @@ def handle_message(message: telebot.types.Message) -> None:
             d = list(DINAMIK_PORTFEL)
             s = list(STRATEJI_PORTFEL)
         safe_reply(message,
-                   f"🔭 Kripto: {', '.join(d) or '(boş)'}\n"
-                   f"🏛 Səhm : {', '.join(s) or '(boş)'}")
+                   f"🔭 *Kripto:* {', '.join(d) or '(boş)'}\n"
+                   f"🏛 *Səhm :* {', '.join(s) or '(boş)'}", parse_mode="Markdown")
         return
 
     # ── Portfel idarəetməsi ────────────────────────────────────────────────
@@ -386,7 +387,7 @@ def handle_message(message: telebot.types.Message) -> None:
         with _portfolio_lock:
             if sym not in DINAMIK_PORTFEL:
                 DINAMIK_PORTFEL.append(sym)
-        safe_reply(message, f"✅ Kripto Radara əlavə edildi: {sym}")
+        safe_reply(message, f"✅ Kripto Radara əlavə edildi: *{sym}*", parse_mode="Markdown")
         return
 
     if lower.startswith("skan sil:"):
@@ -394,7 +395,7 @@ def handle_message(message: telebot.types.Message) -> None:
         with _portfolio_lock:
             if sym in DINAMIK_PORTFEL:
                 DINAMIK_PORTFEL.remove(sym)
-        safe_reply(message, f"🗑 Kripto Radarından silindi: {sym}")
+        safe_reply(message, f"🗑 Kripto Radarından silindi: *{sym}*", parse_mode="Markdown")
         return
 
     if lower.startswith("strat əlavə et:"):
@@ -404,7 +405,7 @@ def handle_message(message: telebot.types.Message) -> None:
         with _portfolio_lock:
             if sym not in STRATEJI_PORTFEL:
                 STRATEJI_PORTFEL.append(sym)
-        safe_reply(message, f"🏛 Səhm Radarına əlavə edildi: {sym}")
+        safe_reply(message, f"🏛 Səhm Radarına əlavə edildi: *{sym}*", parse_mode="Markdown")
         return
 
     if lower.startswith("strat sil:"):
@@ -412,17 +413,17 @@ def handle_message(message: telebot.types.Message) -> None:
         with _portfolio_lock:
             if sym in STRATEJI_PORTFEL:
                 STRATEJI_PORTFEL.remove(sym)
-        safe_reply(message, f"🗑 Səhm Radarından silindi: {sym}")
+        safe_reply(message, f"🗑 Səhm Radarından silindi: *{sym}*", parse_mode="Markdown")
         return
 
     # ── Sərbəst söhbət → Gemini ────────────────────────────────────────────
     def _bg_chat() -> None:
         persona = (
-            "Sən M.Genat 3.1 Pro-san — peşəkar maliyyə analitiki. "
-            "İstifadəçi sənə yazır:\n\n"
+            "Sən M.Genat 4.0 Pro-san — peşəkar maliyyə analitikisən. "
+            "Aşağıdakı istifadəçi sualına qısa və net cavab ver:\n\n"
         )
         result = gemini_call(persona + text)
-        safe_reply(message, result)
+        safe_reply(message, result, parse_mode="Markdown")
 
     threading.Thread(target=_bg_chat, daemon=True).start()
 
@@ -433,8 +434,7 @@ def handle_message(message: telebot.types.Message) -> None:
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return "M.Genat 3.1 Pro — Live ✅", 200
-
+    return "M.Genat 4.0 Pro — Live ✅", 200
 
 @app.route("/check-models", methods=["GET"])
 def check_models():
@@ -445,7 +445,6 @@ def check_models():
         return {"visible_models": model_names, "count": len(model_names)}, 200
     except Exception as e:
         return {"error": str(e)}, 500
-
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
@@ -462,12 +461,10 @@ def webhook():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _sched_wrapper(report_type: str) -> None:
-    """Schedule-dan çağırılan wrapper — exception-ı udmur."""
     try:
         generate_report(report_type, CHAT_ID)
     except Exception as e:
         log.error("Schedule xəta [%s]: %s", report_type, e)
-
 
 def schedule_loop() -> None:
     schedule.every().day.at("06:00").do(_sched_wrapper, "SƏHƏR HESABATI")
@@ -491,7 +488,7 @@ def setup_webhook() -> None:
     wh_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}"
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook",
+            f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/setWebhook",
             json={"url": wh_url, "drop_pending_updates": True},
             timeout=15,
         )
@@ -510,7 +507,7 @@ def setup_webhook() -> None:
 
 if __name__ == "__main__":
     log.info("═" * 60)
-    log.info("  M.Genat 3.1 Pro başlayır")
+    log.info("  M.Genat 4.0 Pro başlayır")
     log.info("  Port      : %d", PORT)
     log.info("  Chat ID   : %s", CHAT_ID or "⚠️ təyin edilməyib")
     log.info("  Gemini    : %s", "✅" if GEMINI_API_KEY  else "❌ yoxdur")
