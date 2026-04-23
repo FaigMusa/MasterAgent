@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║            M.Genat 4.0 Pro  ·  data_engine.py  (Zirehli Versiya)             ║
+║            M.Genat 5.0 Pro  ·  data_engine.py  (Zirehli Versiya)             ║
 ║                                                                              ║
 ║   SCOUT  →  Binance (Vision) / yfinance · 4 TF · RSI · EMA · Volume Spike    ║
 ║   MASTER →  CryptoPanic · RSS (Yahoo/CNBC/Reuters…) · Big-Fish filter        ║
@@ -765,3 +765,48 @@ if __name__ == "__main__":
     print(f"Keyfiyyət : {ctx['data_quality']}")
     print("\n--- PROMPT PREVIEW (ilk 600 simvol) ---")
     print(pmt[:600])
+    
+import yfinance as yf
+import pandas as pd
+
+def check_anomalies(symbols: list[str]) -> list[str]:
+    """
+    Verilmiş tikerlərdə qəfil qiymət və ya həcm sıçrayışlarını yoxlayır.
+    Əgər anomaliya varsa, hesabat siyahısı qaytarır.
+    """
+    anomalies = []
+    for sym in symbols:
+        try:
+            # Kripto və ya Səhm formatını yfinance üçün tənzimləyək
+            yf_sym = f"{sym}-USD" if "USDT" in sym else sym
+            
+            # Son 5 günlük datanı saatlıq/5 dəqiqəlik interyalla çəkirik
+            ticker = yf.Ticker(yf_sym)
+            hist = ticker.history(period="5d", interval="1h") 
+            
+            if hist.empty or len(hist) < 2:
+                continue
+                
+            # Həcm və Qiymət analizi
+            vol_mean = hist['Volume'][:-1].mean()
+            last_vol = hist['Volume'].iloc[-1]
+            prev_close = hist['Close'].iloc[-2]
+            last_close = hist['Close'].iloc[-1]
+            
+            price_change = ((last_close - prev_close) / prev_close) * 100
+            
+            # ŞƏRT: Qiymət 2%-dən çox dəyişibsə VƏ YA həcm 2 qat artıbsa = ANOMALİYA
+            is_volume_spike = last_vol > (vol_mean * 2) and vol_mean > 0
+            is_price_spike = abs(price_change) > 2.0
+            
+            if is_volume_spike or is_price_spike:
+                trend = "🟢 QALXMA" if price_change > 0 else "🔴 DÜŞMƏ"
+                anomalies.append(
+                    f"⚠️ **{sym}** - {trend}\n"
+                    f"Dəyişim: {price_change:.2f}%\n"
+                    f"Həcm: Orta göstəricidən {last_vol/vol_mean if vol_mean > 0 else 0:.1f}x qat çox."
+                )
+        except Exception as e:
+            pass # API xətalarını səssizcə keçirik
+            
+    return anomalies
