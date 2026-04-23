@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 import time
+import datetime
 from typing import Optional
 
 import requests
@@ -33,7 +34,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MÜHİT DƏYİŞƏNLƏRİ
+#  MÜHİT DƏYİŞƏNLƏRİ VƏ QLOBAL STATUSLAR
 # ══════════════════════════════════════════════════════════════════════════════
 
 TELEGRAM_TOKEN  = os.getenv("TELEGRAM_TOKEN",      "")
@@ -58,6 +59,7 @@ STRATEJI_PORTFEL = _env_list("STRATEJI_PORTFEL", _STRATEJI_DEFAULT)
 
 # Botun hansı əməliyyatı gözlədiyini yadda saxlamaq üçün (State)
 user_states = {} 
+SCOUT_AUTO_ACTIVE = False # Avtopilot başlanğıcda SÖNÜLÜDÜR
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GEMİNİ VƏ YARDIMÇILAR
@@ -147,7 +149,7 @@ def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None
         prompt = data_engine.build_gemini_prompt(context=context)
         analysis = gemini_call(prompt)
 
-        header = f"🏛 **{report_type}** — M.Genat 4.0 Pro\n{'─'*40}\n"
+        header = f"🏛 **{report_type}** — M.Genat 4.1 Pro\n{'─'*40}\n"
         safe_send(target, header + analysis, parse_mode="Markdown")
 
     except Exception as exc:
@@ -173,6 +175,13 @@ def main_menu() -> InlineKeyboardMarkup:
     m.add(
         InlineKeyboardButton("⚖️ Tam Hakim Analizi (Ümumi Portfel)", callback_data="run_judge")
     )
+    
+    # Yeni Avtopilot Düyməsi (Dinamo)
+    status_icon = "🟢 AÇIQ" if SCOUT_AUTO_ACTIVE else "🔴 BAĞLI"
+    m.add(
+        InlineKeyboardButton(f"🤖 Avtopilot Scout: {status_icon}", callback_data="toggle_scout")
+    )
+    
     m.add(
         InlineKeyboardButton("ℹ️ Məlumat / Yardım", callback_data="show_help")
     )
@@ -209,7 +218,7 @@ def send_panel(message):
     user_states.pop(message.chat.id, None)
     
     welcome = (
-        "🏛 **M.Genat 4.0 Pro İdarəetmə Mərkəzi**\n"
+        "🏛 **M.Genat 4.1 Pro İdarəetmə Mərkəzi**\n"
         "Xoş gəldiniz. Mühərrik aktivdir.\n"
         "Zəhmət olmasa, əməliyyat seçin:"
     )
@@ -269,7 +278,7 @@ def handle_callback(call: telebot.types.CallbackQuery) -> None:
         lst = DINAMIK_PORTFEL if ptype == "crypto" else STRATEJI_PORTFEL
         bot.edit_message_text(f"🔭 **Yenilənmiş Radar:**\n`" + ("`\n`".join(lst) if lst else "Siyahı boşdur.") + "`", chat_id=cid, message_id=msg_id, reply_markup=portfolio_menu(ptype), parse_mode="Markdown")
 
-    # ── AYRILMIŞ ANALİZLƏR (YENİ) ──
+    # ── AYRILMIŞ ANALİZLƏR ──
     elif data == "run_scout":
         with _portfolio_lock: syms = list(DINAMIK_PORTFEL)
         bot.edit_message_text("⏳ 🔬 *SCOUT REJİMİ:* Yalnız Kripto aktivləri üçün texniki analiz başladılır...", chat_id=cid, message_id=msg_id, parse_mode="Markdown")
@@ -283,6 +292,14 @@ def handle_callback(call: telebot.types.CallbackQuery) -> None:
     elif data == "run_judge":
         bot.edit_message_text("⏳ ⚖️ *HAKİM REJİMİ:* Bütün portfel (Kripto + Səhm) və makro korelyasiyalar oxunur...", chat_id=cid, message_id=msg_id, parse_mode="Markdown")
         threading.Thread(target=generate_report, args=("Tam Hakim Analizi (Ümumi)", cid, None), daemon=True).start()
+
+    # ── AVTOPİLOT İDARƏSİ (YENİ) ──
+    elif data == "toggle_scout":
+        global SCOUT_AUTO_ACTIVE
+        SCOUT_AUTO_ACTIVE = not SCOUT_AUTO_ACTIVE
+        status = "Aktivləşdirildi 🟢 (Bazar saatlarında hər 5 dəqiqədən bir izləyəcək)" if SCOUT_AUTO_ACTIVE else "Deaktiv edildi 🔴"
+        bot.answer_callback_query(call.id, f"Avtopilot {status}", show_alert=True)
+        bot.edit_message_reply_markup(chat_id=cid, message_id=msg_id, reply_markup=main_menu())
 
     # ── YARDIM ──
     elif data == "show_help":
@@ -341,12 +358,12 @@ def handle_message(message: telebot.types.Message) -> None:
         return
 
     if lower in ("/start", "/menu", "menu", "panel"):
-        bot.send_message(cid, "🎛 **M.Genat 4.0 Pro Paneli**", reply_markup=main_menu(), parse_mode="Markdown")
+        bot.send_message(cid, "🎛 **M.Genat 4.1 Pro Paneli**", reply_markup=main_menu(), parse_mode="Markdown")
         return
 
     # ── 3. SƏRBƏST SÖHBƏT (Gemini) ──
     def _bg_chat() -> None:
-        persona = "Sən M.Genat 4.0 Pro-san. Qısa və peşəkar cavab ver:\n\n"
+        persona = "Sən M.Genat 4.1 Pro-san. Qısa və peşəkar cavab ver:\n\n"
         result = gemini_call(persona + text)
         safe_reply(message, result, parse_mode="Markdown")
 
@@ -358,7 +375,7 @@ def handle_message(message: telebot.types.Message) -> None:
 
 @app.route("/", methods=["GET"])
 def health_check(): 
-    return "M.Genat 4.0 Pro Panel — Live ✅", 200
+    return "M.Genat 4.1 Pro Panel — Live ✅", 200
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
@@ -390,6 +407,56 @@ def schedule_loop() -> None:
         schedule.run_pending()
         time.sleep(30)
 
+def autonomous_scout_loop():
+    """Arxa fonda işləyən Avtopilot Scout."""
+    global SCOUT_AUTO_ACTIVE
+    while True:
+        if not SCOUT_AUTO_ACTIVE:
+            time.sleep(60) # Sönülüdürsə, hər 1 dəqiqədən bir oyanıb düyməni yoxlayır
+            continue
+            
+        # Bazar saatlarının təyini (UTC ilə)
+        now = datetime.datetime.utcnow()
+        is_weekend = now.weekday() >= 5
+        
+        # Asiya(00-06), London(08-16), NY(13-20). Aktiv zona: 08:00 - 21:00 UTC
+        is_active_market = (8 <= now.hour <= 21) and not is_weekend
+        
+        # Əgər aktiv bazardırsa 5 dəqiqə, deyilsə 30 dəqiqə
+        sleep_interval = (5 * 60) if is_active_market else (30 * 60)
+        
+        # Radardakı Kriptoları yoxlayaq
+        with _portfolio_lock:
+            syms = list(DINAMIK_PORTFEL)
+            
+        if syms:
+            try:
+                anomalies = data_engine.check_anomalies(syms)
+                if anomalies:
+                    # Anomaliya tapıldısa Judge-dan soruş!
+                    anomaliya_text = "\n\n".join(anomalies)
+                    prompt = (
+                        "Sən 'Judge' (Hakim) adlı Hedge Fund analitikisən. "
+                        "Scout Agent bazarda qəfil anomaliya tapdı. Bu dataları Day Trader perspektivindən "
+                        "qısa analiz et, rəy bildir və tövsiyə ver:\n\n" + anomaliya_text
+                    )
+                    
+                    judge_reply = gemini_call(prompt)
+                    
+                    # Təcili siqnal göndər
+                    msg = f"🚨 **AVTOPİLOT SCOUT SİQNALI** 🚨\n{'─'*30}\n{judge_reply}"
+                    safe_send(CHAT_ID, msg, parse_mode="Markdown")
+                    
+                    # Siqnal verəndən sonra spam olmamaq üçün əlavə 15 dəq gözləyir
+                    time.sleep(15 * 60) 
+                    continue
+            except Exception as e:
+                log.error(f"Avtopilot xətası: {e}")
+                
+        # Növbəti skanı gözlə
+        log.info(f"Avtopilot skanı bitdi. Növbəti skana qədər {sleep_interval/60} dəqiqə gözləyir...")
+        time.sleep(sleep_interval)
+
 def setup_connection() -> None:
     """Telegram ilə bağlantını zorla təmizləyib yenidən qurur."""
     try:
@@ -411,4 +478,5 @@ def setup_connection() -> None:
 if __name__ == "__main__":
     setup_connection()
     threading.Thread(target=schedule_loop, daemon=True).start()
+    threading.Thread(target=autonomous_scout_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT, debug=False)
