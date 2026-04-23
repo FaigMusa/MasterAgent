@@ -765,7 +765,12 @@ if __name__ == "__main__":
     print(f"Keyfiyyət : {ctx['data_quality']}")
     print("\n--- PROMPT PREVIEW (ilk 600 simvol) ---")
     print(pmt[:600])
-    
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHECK ANOMALIES CODES
+# ══════════════════════════════════════════════════════════════════════════════
+
 import yfinance as yf
 import pandas as pd
 
