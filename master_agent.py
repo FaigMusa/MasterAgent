@@ -110,7 +110,7 @@ def _auth(message_or_chat_id) -> bool:
     return cid == str(CHAT_ID)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HESABAT GENERATİRƏSİ (CALLBACK İLƏ)
+#  HESABAT GENERATİRƏSİ 
 # ══════════════════════════════════════════════════════════════════════════════
 def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None, custom_symbols: list[str] = None) -> None:
     target = chat_id or CHAT_ID
@@ -124,7 +124,6 @@ def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None
             safe_send(target, "⚠️ Seçilmiş portfel boşdur. Əvvəlcə panelden aktiv əlavə edin.")
             return
 
-        # DİQQƏT: llm_callback=gemini_call ötürülür! Beləliklə data_engine-in öz-özünə import etməsinə ehtiyac qalmır.
         context = data_engine.aggregate_context(symbols=symbols, cryptopanic_token=CRYPTOPANIC_KEY, llm_callback=gemini_call)
         prompt = data_engine.build_gemini_prompt(context=context)
         analysis = gemini_call(prompt)
@@ -278,14 +277,13 @@ def handle_message(message: telebot.types.Message) -> None:
     threading.Thread(target=_bg_chat, daemon=True).start()
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SERVER VƏ MÜHƏRRİKLƏR (KEEP-ALIVE, AUTO-SCOUT)
+#  SERVER VƏ MÜHƏRRİKLƏR
 # ══════════════════════════════════════════════════════════════════════════════
 @app.route("/", methods=["GET"])
 def health_check(): return "M.Genat 5.0 Pro Panel — Live ✅", 200
 
 @app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    log.info("📬 QAPI DÖYÜLDÜ: Webhook endpoint-ə müraciət!") 
     if flask_request.headers.get('content-type') == 'application/json':
         json_string = flask_request.get_data().decode('utf-8')
         upd = telebot.types.Update.de_json(json_string)
@@ -306,17 +304,13 @@ def schedule_loop() -> None:
         time.sleep(30)
 
 def keep_alive_loop():
-    """Render serverinin yuxuya getməməsi üçün öz-özünə ping atır (Hər 10 dəqiqə)."""
     while True:
         if WEBHOOK_URL:
-            try:
-                requests.get(WEBHOOK_URL, timeout=10)
-                log.info("💓 Heartbeat: Render oyaq saxlanıldı.")
+            try: requests.get(WEBHOOK_URL, timeout=10)
             except Exception: pass
         time.sleep(10 * 60)
 
 def autonomous_scout_loop():
-    """Arxa fonda işləyən Avtopilot Scout (Multi-Source Intelli)."""
     global SCOUT_AUTO_ACTIVE
     while True:
         if not SCOUT_AUTO_ACTIVE:
@@ -328,13 +322,10 @@ def autonomous_scout_loop():
         sleep_interval = (5 * 60) if is_active_market else (30 * 60)
         
         try:
-            # 1. Hər saat başı Ümumi Konsensus hesabatı göndər (gemini_call callback kimi ötürülür)
             if now.minute < 5: 
-                log.info("📡 Scout: Investing.com və qlobal mənbələr oxunur...")
                 macro_report = data_engine.build_consensus_report(asset=None, llm_callback=gemini_call)
                 safe_send(CHAT_ID, f"🌍 **ÜMUMİ BAZAR KONSENSUSU**\n{'─'*30}\n{macro_report}", parse_mode="Markdown")
 
-            # 2. Hər 5 dəqiqədən bir radarı yoxla (Anomaliya və Aktiv Təsiri)
             with _portfolio_lock:
                 syms = list(DINAMIK_PORTFEL) + list(STRATEJI_PORTFEL)
                 
