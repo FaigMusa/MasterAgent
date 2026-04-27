@@ -32,10 +32,10 @@ HTTP_TIMEOUT     = 12
 THREAD_TIMEOUT   = 30
 
 SCOUT_TIMEFRAMES: dict[str, tuple[str, str, str]] = {
-    "5m": ("5m",  "5m",  "1d"),
-    "1h": ("1h",  "60m", "5d"),
-    "4h": ("4h",  "1h",  "5d"),   
-    "1d": ("1d",  "1d",  "60d"),
+    "5m": ("5m",  "5m",  "5d"),   # 5 dəqiqəlik data maksimum 5 gün geriyə baxır
+    "1h": ("1h",  "60m", "1mo"),  # EMA 200 üçün 1 aya qaldırdıq
+    "4h": ("4h",  "1h",  "1mo"),  
+    "1d": ("1d",  "1d",  "1y"),   # Günlük EMA 200 üçün mütləq 1 il lazımdır!
 }
 KLINE_LIMIT          = 210   
 LIQUIDITY_MULTIPLIER = 1.5
@@ -207,38 +207,66 @@ class ScoutAgent:
         if n >= 200: out["ema_200"] = _safe_round(ta.trend.EMAIndicator(close=close, window=200).ema_indicator().iloc[-1])
         return out
 
-    def _volume(self, df: pd.DataFrame) -> tuple[Optional[float], Optional[float], str]:
-        if "volume" not in df.columns or len(df) < 2: return None, None, "UNKNOWN"
-        vols = df["volume"].dropna()
-        last = _safe_round(vols.iloc[-1], 2)
-        lookbk = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
-        avg = _safe_round(lookbk.mean(), 2) if len(lookbk) >= 3 else None
-        return last, avg, _vol_status(last, avg)
+    def _volume(self, df: pd.DataFrame, symbol: str) -> tuple[Optional[float], Optional[float], str]:
+    # Əgər aktiv İndeksdirsə (DXY və s.) həcm hesablama
+    if symbol.startswith("^") or symbol == "DX-Y.NYB":
+        return None, None, "İNDEX (Tətbiq Olunmur)"
+        
+    if "volume" not in df.columns or len(df) < 2: return None, None, "UNKNOWN"
+    vols = df["volume"].dropna()
+    # Yalnız həcm > 0 olanları yoxlayırıq
+    if vols.sum() == 0: return None, None, "İNDEX (Tətbiq Olunmur)"
+    
+    last = _safe_round(vols.iloc[-1], 2)
+    lookbk = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
+    avg = _safe_round(lookbk.mean(), 2) if len(lookbk) >= 3 else None
+    return last, avg, _vol_status(last, avg)
 
     def _snap(self, symbol: str, tf: str, is_crypto: bool) -> TimeframeSnapshot:
         b_iv, yf_iv, yf_period = SCOUT_TIMEFRAMES[tf]
         source = "unknown"
         try:
             if is_crypto:
-                try: df, source = self._binance_klines(symbol, b_iv), "binance"
-                except:
-                    if tf == "4h": df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
-                    else: df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+                try: 
+                    df, source = self._binance_klines(symbol, b_iv), "binance"
+                except Exception:
+                    if tf == "4h": 
+                        df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
+                    else: 
+                        df = self._yf_ohlcv(symbol, yf_iv, yf_period)
                     source = "yfinance (fallback)"
-            else:
-                if tf == "4h": df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
-                else: df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+            else: # Ənənəvi aktivlər üçün (XLU, COPX, SMH və s.)
+                if tf == "4h": 
+                    df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
+                else: 
+                    try:
+                        df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+                    except ValueError:
+                        # FALLBACK: Əgər 5m çökərsə, 15m ilə bir daha sına (XLU xətası üçün həll)
+                        log.warning(f"⚠️ {symbol} üçün {tf} tapılmadı. Fallback (15m) işə düşür...")
+                        if tf == "5m": 
+                            df = self._yf_ohlcv(symbol, "15m", "5d")
+                        else: 
+                            raise # Digər TF-lərdə xətanı burax
                 source = "yfinance"
+
             if df.empty: raise ValueError("Boş")
             last = df.iloc[-1]
-            try: ctime = pd.Timestamp(last.get("open_time")).tz_localize("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-            except: ctime = _utc_now()
+            
+            try: 
+                ctime = pd.Timestamp(last.get("open_time")).tz_localize("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception: 
+                ctime = _utc_now()
+                
             ind = self._indicators(df)
-            vl, va, vs = self._volume(df)
+            
+            # Yeni Həcm (Volume) çağırışı (DXY probleminin həlli)
+            vl, va, vs = self._volume(df, symbol)
+            
             return TimeframeSnapshot(tf=tf, source=source, last_close=_safe_round(last["close"]), last_candle_time=ctime, **ind, volume_last=vl, volume_avg24=va, volume_status=vs)
+            
         except Exception as exc:
             return TimeframeSnapshot(tf=tf, source=source, last_close=None, last_candle_time=_utc_now(), rsi_14=None, ema_50=None, ema_100=None, ema_200=None, volume_last=None, volume_avg24=None, volume_status="UNKNOWN", error=str(exc))
-
     def scan(self, symbol: str) -> ScoutResult:
         sym, crypto, tfs, snaps, errors = symbol.upper(), _is_crypto(symbol), list(SCOUT_TIMEFRAMES), {}, []
         with ThreadPoolExecutor(max_workers=4) as pool:
