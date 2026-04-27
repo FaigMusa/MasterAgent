@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import asdict, dataclass, field
@@ -18,8 +19,15 @@ from typing import Any, Optional, Callable
 import feedparser
 import pandas as pd
 import requests
-import ta
 import yfinance as yf
+import PyPDF2
+
+# 'ta' (Technical Analysis) kitabxanası bəzən Render-də çökə bilər, ona görə də sığortalanır
+try:
+    import ta
+    TA_AVAILABLE = True
+except ImportError:
+    TA_AVAILABLE = False
 
 log = logging.getLogger(__name__)
 
@@ -32,10 +40,10 @@ HTTP_TIMEOUT     = 12
 THREAD_TIMEOUT   = 30
 
 SCOUT_TIMEFRAMES: dict[str, tuple[str, str, str]] = {
-    "5m": ("5m",  "5m",  "5d"),   # 5 dəqiqəlik data maksimum 5 gün geriyə baxır
-    "1h": ("1h",  "60m", "1mo"),  # EMA 200 üçün 1 aya qaldırdıq
-    "4h": ("4h",  "1h",  "1mo"),  
-    "1d": ("1d",  "1d",  "1y"),   # Günlük EMA 200 üçün mütləq 1 il lazımdır!
+    "5m": ("5m",  "5m",  "5d"),
+    "1h": ("1h",  "60m", "1mo"),
+    "4h": ("4h",  "1h",  "1mo"),   
+    "1d": ("1d",  "1d",  "1y"),
 }
 KLINE_LIMIT          = 210   
 LIQUIDITY_MULTIPLIER = 1.5
@@ -121,7 +129,6 @@ def _rss_time(entry: Any) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def research_missing_intel(topic: str, llm_callback: Callable) -> str:
-    """Gemini funksiyasını parametr kimi qəbul edib işlədir."""
     if not llm_callback: return "Axtarış mühərriki qoşulmayıb."
     prompt = f"Sən peşəkar maliyyə analitikisən. QƏTİ QADAĞANDIR uydurmaq. Yalnız REAL mənbələrdən bu mövzunun datalarını tap: {topic}"
     return llm_callback(prompt)
@@ -199,8 +206,9 @@ class ScoutAgent:
         return pd.DataFrame({"open": df["open"].resample("4h").first(), "high": df["high"].resample("4h").max(), "low": df["low"].resample("4h").min(), "close": df["close"].resample("4h").last(), "volume": df["volume"].resample("4h").sum()}).dropna(subset=["close"]).reset_index()
 
     def _indicators(self, df: pd.DataFrame) -> dict:
-        close, n = df["close"].dropna(), len(df["close"].dropna())
         out = {"rsi_14": None, "ema_50": None, "ema_100": None, "ema_200": None}
+        if not TA_AVAILABLE: return out
+        close, n = df["close"].dropna(), len(df["close"].dropna())
         if n >= 15: out["rsi_14"] = _safe_round(ta.momentum.RSIIndicator(close=close, window=14).rsi().iloc[-1])
         if n >= 50: out["ema_50"] = _safe_round(ta.trend.EMAIndicator(close=close, window=50).ema_indicator().iloc[-1])
         if n >= 100: out["ema_100"] = _safe_round(ta.trend.EMAIndicator(close=close, window=100).ema_indicator().iloc[-1])
@@ -208,19 +216,14 @@ class ScoutAgent:
         return out
 
     def _volume(self, df: pd.DataFrame, symbol: str) -> tuple[Optional[float], Optional[float], str]:
-    # Əgər aktiv İndeksdirsə (DXY və s.) həcm hesablama
-    if symbol.startswith("^") or symbol == "DX-Y.NYB":
-        return None, None, "İNDEX (Tətbiq Olunmur)"
-        
-    if "volume" not in df.columns or len(df) < 2: return None, None, "UNKNOWN"
-    vols = df["volume"].dropna()
-    # Yalnız həcm > 0 olanları yoxlayırıq
-    if vols.sum() == 0: return None, None, "İNDEX (Tətbiq Olunmur)"
-    
-    last = _safe_round(vols.iloc[-1], 2)
-    lookbk = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
-    avg = _safe_round(lookbk.mean(), 2) if len(lookbk) >= 3 else None
-    return last, avg, _vol_status(last, avg)
+        if symbol.startswith("^") or symbol == "DX-Y.NYB": return None, None, "İNDEX (Tətbiq Olunmur)"
+        if "volume" not in df.columns or len(df) < 2: return None, None, "UNKNOWN"
+        vols = df["volume"].dropna()
+        if vols.sum() == 0: return None, None, "İNDEX (Tətbiq Olunmur)"
+        last = _safe_round(vols.iloc[-1], 2)
+        lookbk = vols.iloc[-(VOLUME_LOOKBACK + 1):-1]
+        avg = _safe_round(lookbk.mean(), 2) if len(lookbk) >= 3 else None
+        return last, avg, _vol_status(last, avg)
 
     def _snap(self, symbol: str, tf: str, is_crypto: bool) -> TimeframeSnapshot:
         b_iv, yf_iv, yf_period = SCOUT_TIMEFRAMES[tf]
@@ -230,43 +233,30 @@ class ScoutAgent:
                 try: 
                     df, source = self._binance_klines(symbol, b_iv), "binance"
                 except Exception:
-                    if tf == "4h": 
-                        df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
-                    else: 
-                        df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+                    if tf == "4h": df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
+                    else: df = self._yf_ohlcv(symbol, yf_iv, yf_period)
                     source = "yfinance (fallback)"
-            else: # Ənənəvi aktivlər üçün (XLU, COPX, SMH və s.)
-                if tf == "4h": 
-                    df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
+            else:
+                if tf == "4h": df = self._resample_4h(self._yf_ohlcv(symbol, SCOUT_TIMEFRAMES["1h"][1], SCOUT_TIMEFRAMES["1h"][2]))
                 else: 
-                    try:
-                        df = self._yf_ohlcv(symbol, yf_iv, yf_period)
+                    try: df = self._yf_ohlcv(symbol, yf_iv, yf_period)
                     except ValueError:
-                        # FALLBACK: Əgər 5m çökərsə, 15m ilə bir daha sına (XLU xətası üçün həll)
-                        log.warning(f"⚠️ {symbol} üçün {tf} tapılmadı. Fallback (15m) işə düşür...")
-                        if tf == "5m": 
-                            df = self._yf_ohlcv(symbol, "15m", "5d")
-                        else: 
-                            raise # Digər TF-lərdə xətanı burax
+                        if tf == "5m": df = self._yf_ohlcv(symbol, "15m", "5d")
+                        else: raise
                 source = "yfinance"
 
             if df.empty: raise ValueError("Boş")
             last = df.iloc[-1]
+            try: ctime = pd.Timestamp(last.get("open_time")).tz_localize("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception: ctime = _utc_now()
             
-            try: 
-                ctime = pd.Timestamp(last.get("open_time")).tz_localize("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-            except Exception: 
-                ctime = _utc_now()
-                
             ind = self._indicators(df)
-            
-            # Yeni Həcm (Volume) çağırışı (DXY probleminin həlli)
             vl, va, vs = self._volume(df, symbol)
             
             return TimeframeSnapshot(tf=tf, source=source, last_close=_safe_round(last["close"]), last_candle_time=ctime, **ind, volume_last=vl, volume_avg24=va, volume_status=vs)
-            
         except Exception as exc:
             return TimeframeSnapshot(tf=tf, source=source, last_close=None, last_candle_time=_utc_now(), rsi_14=None, ema_50=None, ema_100=None, ema_200=None, volume_last=None, volume_avg24=None, volume_status="UNKNOWN", error=str(exc))
+
     def scan(self, symbol: str) -> ScoutResult:
         sym, crypto, tfs, snaps, errors = symbol.upper(), _is_crypto(symbol), list(SCOUT_TIMEFRAMES), {}, []
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -341,8 +331,6 @@ class MasterAgent:
         combined = sorted(crypto + macro, key=lambda x: x.score, reverse=True)
         return {"collected_at": _utc_now(), "crypto_news": [i.to_dict() for i in crypto], "macro_news": [i.to_dict() for i in macro], "top_signals": [i.to_dict() for i in combined[:5]], "master_ok": len(combined) > 0}
 
-import os
-import PyPDF2
 class MemoryAgent:
     def __init__(self, kb_path="knowledge_base"):
         self.kb_path = kb_path
@@ -364,10 +352,6 @@ class MemoryAgent:
         if len(compiled_text) > max_chars: compiled_text = compiled_text[:max_chars] + "\n...[Kəsildi]..."
         return compiled_text
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  AGGREGATOR 
-# ══════════════════════════════════════════════════════════════════════════════
-
 def aggregate_context(symbols: list[str], cryptopanic_token: str, news_currencies: str = "BTC,ETH", llm_callback: Callable = None) -> dict:
     if not symbols: raise ValueError("Ticker tələb olunur.")
     macro_symbols = ["DX-Y.NYB", "GC=F"] 
@@ -384,7 +368,6 @@ def aggregate_context(symbols: list[str], cryptopanic_token: str, news_currencie
         try: memory_res = fmem.result(timeout=THREAD_TIMEOUT)
         except: memory_res = "Yaddaş oxuna bilmədi."
 
-    # Callback vasitəsilə Google Research (Master_agent-i idxal etmədən)
     google_research_fallback = {}
     if llm_callback:
         for res in scout_res:
@@ -416,7 +399,7 @@ def build_gemini_prompt(context: dict) -> str:
     json_block = json.dumps(context, ensure_ascii=False)
     return f"""Sən M.Genat 5.0 Pro-san.
 MÜTLƏQ QAYDALAR (Zero Hallucination):
-1. Heç bir qiyməti uydurma! YALNIZ aşağıdakı JSON-dakı API datasına və ya 'google_research' blokuna istinad et.
+1. Heç bir rəqəmi uydurma! YALNIZ aşağıdakı JSON-dakı API datasına və ya 'google_research' blokuna istinad et.
 2. [HAKİM MƏNTİQİ]: Ziddiyyəti açıqla.
 3. [KORELYASİYA]: DXY və Qızılın trendi ilə müqayisə et.
 
