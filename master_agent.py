@@ -1,7 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║            M.Genat 5.0 Pro  ·  master_agent.py (Terminal İnterfeysi)         ║
-║            Auto-Scout · Keep-Alive · Google Research · RSS Intel             ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -23,7 +22,6 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import data_engine
 
-# ──────────────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s")
 log = logging.getLogger(__name__)
 
@@ -48,7 +46,7 @@ DINAMIK_PORTFEL  = _env_list("DINAMIK_PORTFEL",  ["BTCUSDT", "ETHUSDT"])
 STRATEJI_PORTFEL = _env_list("STRATEJI_PORTFEL", ["SPY", "GC=F"])
 
 user_states = {} 
-SCOUT_AUTO_ACTIVE = False # Avtopilot başlanğıcda SÖNÜLÜDÜR
+SCOUT_AUTO_ACTIVE = False 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  GEMİNİ VƏ YARDIMÇILAR
@@ -65,7 +63,6 @@ def gemini_call(prompt: str, model: str = "gemini-2.5-flash", retries: int = 3) 
     if not GEMINI_API_KEY: return "❌ GEMINI_API_KEY yoxdur."
     client = _get_gemini()
     wait = 5
-    # Strict prompt to prevent hallucination as requested
     strict_prompt = "DİQQƏT: Özündən heç bir rəqəm uydurma. Real dataya əsaslan.\n\n" + prompt
 
     for attempt in range(1, retries + 1):
@@ -113,7 +110,7 @@ def _auth(message_or_chat_id) -> bool:
     return cid == str(CHAT_ID)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  HESABAT GENERATİRƏSİ
+#  HESABAT GENERATİRƏSİ (CALLBACK İLƏ)
 # ══════════════════════════════════════════════════════════════════════════════
 def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None, custom_symbols: list[str] = None) -> None:
     target = chat_id or CHAT_ID
@@ -127,7 +124,8 @@ def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None
             safe_send(target, "⚠️ Seçilmiş portfel boşdur. Əvvəlcə panelden aktiv əlavə edin.")
             return
 
-        context = data_engine.aggregate_context(symbols=symbols, cryptopanic_token=CRYPTOPANIC_KEY)
+        # DİQQƏT: llm_callback=gemini_call ötürülür! Beləliklə data_engine-in öz-özünə import etməsinə ehtiyac qalmır.
+        context = data_engine.aggregate_context(symbols=symbols, cryptopanic_token=CRYPTOPANIC_KEY, llm_callback=gemini_call)
         prompt = data_engine.build_gemini_prompt(context=context)
         analysis = gemini_call(prompt)
 
@@ -330,10 +328,10 @@ def autonomous_scout_loop():
         sleep_interval = (5 * 60) if is_active_market else (30 * 60)
         
         try:
-            # 1. Hər saat başı Ümumi Konsensus hesabatı göndər
+            # 1. Hər saat başı Ümumi Konsensus hesabatı göndər (gemini_call callback kimi ötürülür)
             if now.minute < 5: 
                 log.info("📡 Scout: Investing.com və qlobal mənbələr oxunur...")
-                macro_report = data_engine.build_consensus_report(asset=None)
+                macro_report = data_engine.build_consensus_report(asset=None, llm_callback=gemini_call)
                 safe_send(CHAT_ID, f"🌍 **ÜMUMİ BAZAR KONSENSUSU**\n{'─'*30}\n{macro_report}", parse_mode="Markdown")
 
             # 2. Hər 5 dəqiqədən bir radarı yoxla (Anomaliya və Aktiv Təsiri)
@@ -345,7 +343,7 @@ def autonomous_scout_loop():
             if anomalies:
                 for anomaly in anomalies:
                     asset_name = anomaly.split(" - ")[0].replace("⚠️", "").replace("**", "").strip()
-                    micro_report = data_engine.build_consensus_report(asset=asset_name)
+                    micro_report = data_engine.build_consensus_report(asset=asset_name, llm_callback=gemini_call)
                     msg = f"🚨 **SİQNAL: AKTİV TƏSİRİ ({asset_name})** 🚨\n{anomaly}\n{'─'*30}\n{micro_report}"
                     safe_send(CHAT_ID, msg, parse_mode="Markdown")
                 
@@ -370,5 +368,5 @@ if __name__ == "__main__":
     setup_connection()
     threading.Thread(target=schedule_loop, daemon=True).start()
     threading.Thread(target=autonomous_scout_loop, daemon=True).start()
-    threading.Thread(target=keep_alive_loop, daemon=True).start() # Ping dövrəsi aktivdir
+    threading.Thread(target=keep_alive_loop, daemon=True).start() 
     app.run(host="0.0.0.0", port=PORT, debug=False)
