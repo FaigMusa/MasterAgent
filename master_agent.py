@@ -414,7 +414,19 @@ def autonomous_scout_loop():
         if not SCOUT_AUTO_ACTIVE:
             time.sleep(60) # Sönülüdürsə, hər 1 dəqiqədən bir oyanıb düyməni yoxlayır
             continue
-            
+ def keep_alive_loop():
+    """Render serverinin yuxuya getməməsi üçün öz-özünə ping atır."""
+    while True:
+        if WEBHOOK_URL:
+            try:
+                # Öz health_check ünvanımıza sorğu göndəririk
+                requests.get(WEBHOOK_URL, timeout=10)
+                log.info("💓 Heartbeat: Render oyaq saxlanıldı.")
+            except Exception as e:
+                log.error(f"💔 Heartbeat xətası: {e}")
+        
+        # Render 15 dəqiqədən bir yuxuya gedir, biz hər 10 dəqiqədən bir ping atırıq
+        time.sleep(10 * 60)           
         # Bazar saatlarının təyini (UTC ilə)
         now = datetime.datetime.utcnow()
         is_weekend = now.weekday() >= 5
