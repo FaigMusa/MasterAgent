@@ -491,4 +491,5 @@ if __name__ == "__main__":
     setup_connection()
     threading.Thread(target=schedule_loop, daemon=True).start()
     threading.Thread(target=autonomous_scout_loop, daemon=True).start()
+    threading.Thread(target=keep_alive_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=PORT, debug=False)
