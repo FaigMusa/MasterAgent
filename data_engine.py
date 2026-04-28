@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║            M.Genat 5.0 Pro  ·  data_engine.py  (Callback Versiyası)          ║
+║            M.Genat 5.0 Pro  ·  data_engine.py  (Scout 2.0 Sentinel)          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -32,7 +32,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SABİTLƏR
+#  SABİTLƏR VƏ MƏNBƏLƏR
 # ══════════════════════════════════════════════════════════════════════════════
 BINANCE_BASE     = "https://data-api.binance.vision" 
 CRYPTOPANIC_BASE = "https://cryptopanic.com/api/v1"
@@ -62,6 +62,13 @@ MULTI_NEWS_SOURCES = {
     "Investing_Global": "https://www.investing.com/rss/news_285.rss",
     "Investing_Crypto": "https://www.investing.com/rss/news_301.rss",
     "Yahoo_Finance": "https://finance.yahoo.com/news/rssindex"
+}
+
+SCOUT_INTEL_SOURCES = {
+    "Geosiyasət (Münaqişələr/Qlobal)": "https://www.investing.com/rss/news_14.rss",
+    "Makroiqtisadiyyat (FED/İnflyasiya)": "https://www.investing.com/rss/news_285.rss",
+    "Əmtəə və Enerji (Qızıl/Neft/Mis)": "https://www.investing.com/rss/news_11.rss",
+    "Səhm Bazarları (Risk-On/Off)": "https://www.investing.com/rss/news_25.rss"
 }
 
 BIG_FISH_KEYWORDS: dict[str, int] = {
@@ -142,6 +149,24 @@ def fetch_multi_source_news() -> str:
             for entry in feed.entries[:3]: compiled_news += f"- {entry.title}\n"
         except Exception as e: log.error(f"Xəbər xətası ({source_name}): {e}")
     return compiled_news
+
+def gather_scout_intel() -> str:
+    """Scout 2.0 üçün real-vaxt Qlobal və Geosiyasi xəbərləri yığır."""
+    intel_data = ""
+    for category, url in SCOUT_INTEL_SOURCES.items():
+        try:
+            feed = feedparser.parse(url)
+            intel_data += f"\n🌍 **KATEQORİYA: {category}**\n"
+            valid_entries = [e for e in feed.entries if hasattr(e, 'title') and e.title.strip()]
+            for entry in valid_entries[:2]:  
+                intel_data += f"- {entry.title}\n"
+        except Exception as e:
+            log.error(f"Scout Intel xətası ({category}): {e}")
+            
+    if not intel_data.strip():
+        return "⚠️ Xəbər sensorları cavab vermir. Google Research ehtiyatı istifadə edilməlidir."
+    
+    return intel_data
 
 def build_consensus_report(asset: str = None, llm_callback: Callable = None) -> str:
     if not llm_callback: return "Analizator qoşulmayıb."
@@ -384,9 +409,12 @@ def aggregate_context(symbols: list[str], cryptopanic_token: str, news_currencie
         "tfs_available":   list(SCOUT_TIMEFRAMES),
     }
 
+    scout_frontline_news = gather_scout_intel()
+
     return {
-        "engine":       "M.Genat 5.0 Pro",
+        "engine":       "M.Genat 5.0 Pro (Scout 2.0 Sentinel)",
         "generated_at": _utc_now(),
+        "scout_intel":  scout_frontline_news, 
         "scout":        {"symbols": symbols, "results": scout_res},
         "master":       master_res,
         "memory":       memory_res, 
@@ -397,15 +425,33 @@ def aggregate_context(symbols: list[str], cryptopanic_token: str, news_currencie
 def build_gemini_prompt(context: dict) -> str:
     if not context: raise ValueError("Boş kontekst.")
     json_block = json.dumps(context, ensure_ascii=False)
-    return f"""Sən M.Genat 5.0 Pro-san.
-MÜTLƏQ QAYDALAR (Zero Hallucination):
-1. Heç bir rəqəmi uydurma! YALNIZ aşağıdakı JSON-dakı API datasına və ya 'google_research' blokuna istinad et.
-2. [HAKİM MƏNTİQİ]: Ziddiyyəti açıqla.
-3. [KORELYASİYA]: DXY və Qızılın trendi ilə müqayisə et.
+    
+    return f"""Sən M.Genat 5.0 Pro-san — 'Scout 2.0 (The Sentinel)' adlı qabaqcıl institusional analitiksən.
+Sənin vəzifən sadəcə texniki indikatorları (RSI, EMA) oxumaq deyil, həm də qlobal geosiyasəti və makroiqtisadiyyatı eyni anda analiz edib, aktivlərə təsirini tapmaqdır.
 
---- CANLI DATA (JSON) ---
+MÜTLƏQ QAYDALARIN (Zero Hallucination Protocol):
+1. Heç bir rəqəmi, qiyməti və ya xəbəri UYDURMA! Yalnız aşağıdakı JSON datasına əsaslan. Məlumat yoxdursa "Məlumat tapılmadı" yaz.
+2. [TOP-DOWN ANALİZİ]: Əvvəlcə 'scout_intel' blokundakı xəbərləri oxu. Bazarın Risk-On (cəsur) yoxsa Risk-Off (qorxaq) olduğunu təyin et. Yalnız bundan sonra spesifik aktivlərə (tikerlərə) keç.
+3. [KORELYASİYA]: DXY (Dollar) və GC=F (Qızıl) məlumatlarını mütləq makro-mənzərə ilə uzlaşdır.
+
+--- CANLI BAZAR DATASI VƏ QLOBAL İNTELLEKT (JSON) ---
 {json_block}
 --- DATA SONU ---
 
-Real məlumatlara əsasən Azərbaycan dilində hesabat hazırla.
+Aşağıdakı struktura ciddi riayət edərək Azərbaycan dilində peşəkar hesabat hazırla:
+
+## 🌍 QLOBAL MAKRO VƏ GEOSİYASİ VƏZİYYƏT (SENTIMENT)
+(JSON-dakı 'scout_intel' və 'master' xəbərlərini birləşdirərək qlobal mənzərəni izah et. Hazırda dünyada nə baş verir? İnflyasiya, müharibə yoxsa faiz qərarları bazarı idarə edir? Ümumi əhval-ruhiyyə: RISK-ON yoxsa RISK-OFF?)
+
+## ⚖️ BAZARIN TEMPERATURU (DXY VƏ QIZIL)
+(Makro vəziyyət DXY və Qızıla necə təsir edib? 'scout' blokundakı DXY və Qızıl tikerlərinin texniki vəziyyətini qısa təhlil et və xəbərlərlə uzlaşdır.)
+
+## 🎯 AKTİVLƏR ÜZRƏ SPESİFİK TƏSİR (ASSET MAPPING)
+(JSON-da axtarılan digər aktivləri (Kripto, Səhm, ETF) bir-bir təhlil et. 
+Hər aktiv üçün:
+1. Texniki Vəziyyət: EMA, RSI və HƏCM anomaliyası (əgər varsa).
+2. Makro Təsir: Qlobal geosiyasi/makro vəziyyət bu spesifik aktivə necə təsir edəcək? Bullish yoxsa Bearish?)
+
+## 💼 YEKUN HÖKM VƏ RİSK XƏBƏRDARLIĞI
+(Qısa və kəskin institusional nəticə. Ən böyük risk haradadır və növbəti 24 saat üçün əsas "Trigger" (tətikləyici xəbər/qiymət) nə olacaq?)
 """
