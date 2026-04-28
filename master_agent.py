@@ -1,7 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║            M.Genat 5.0 Pro  ·  master_agent.py (Terminal İnterfeysi)         ║
-║  YENİLİKLƏR: Pinecone RAG İnteqrasiyası və /learn (Öyrənən Yaddaş) Əmri      ║
+║  YENİLİKLƏR: Pinecone RAG İnteqrasiyası, Yaddaş UI Paneli və Öyrənmə Əmri    ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -142,19 +142,46 @@ def generate_report(report_type: str = "ANİ ANALİZ", chat_id: str | int = None
         safe_send(target, f"⚠️ Xəta baş verdi: {str(exc)[:200]}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  İNTERAKTİV İDARƏETMƏ PANELİ (UI)
+#  İNTERAKTİV İDARƏETMƏ PANELİ (UI) VƏ YADDAŞ FUNKSİYALARI
 # ══════════════════════════════════════════════════════════════════════════════
+
+def get_recent_memories() -> list[dict]:
+    """Pinecone-dan son 5 dərsi çəkib UI üçün hazırlayır"""
+    if not memory_engine.index: return []
+    try:
+        ids = []
+        for ids_list in memory_engine.index.list(prefix="lesson_"):
+            ids.extend(ids_list)
+        if not ids: return []
+        
+        ids.sort(reverse=True) 
+        recent_ids = ids[:5] 
+        
+        fetched = memory_engine.index.fetch(ids=recent_ids)
+        lessons = []
+        for i in recent_ids:
+            if i in fetched.get('vectors', {}):
+                txt = fetched['vectors'][i]['metadata'].get('text', '')
+                lessons.append({"id": i, "text": txt})
+        return lessons
+    except Exception as e:
+        log.error(f"Yaddaş siyahısı xətası: {e}")
+        return []
+
 def main_menu() -> InlineKeyboardMarkup:
     m = InlineKeyboardMarkup(row_width=2)
     m.add(InlineKeyboardButton("🔭 Kripto Radarı", callback_data="menu_crypto"),
           InlineKeyboardButton("🏛 Səhm/ETF Radarı", callback_data="menu_stocks"))
     m.add(InlineKeyboardButton("🔬 Scout Analizi (Kripto)", callback_data="run_scout"),
           InlineKeyboardButton("🌍 Master Analizi (Səhm)", callback_data="run_master"))
-    m.add(InlineKeyboardButton("⚖️ Tam Hakim Analizi (Ümumi)", callback_data="run_judge"))
+    m.add(InlineKeyboardButton("⚖️ Tam Hakim Analizi", callback_data="run_judge"))
     
     status_icon = "🟢 AÇIQ" if SCOUT_AUTO_ACTIVE else "🔴 BAĞLI"
     m.add(InlineKeyboardButton(f"🤖 Avtopilot Scout: {status_icon}", callback_data="toggle_scout"))
-    m.add(InlineKeyboardButton("ℹ️ Məlumat / Yardım", callback_data="show_help"))
+    
+    # Yeni Yaddaş Paneli Düyməsi
+    m.add(InlineKeyboardButton("🧠 Yaddaş Paneli", callback_data="menu_memory"),
+          InlineKeyboardButton("ℹ️ Yardım", callback_data="show_help"))
     return m
 
 def portfolio_menu(ptype: str) -> InlineKeyboardMarkup:
@@ -239,10 +266,40 @@ def handle_callback(call: telebot.types.CallbackQuery) -> None:
         bot.answer_callback_query(call.id, f"Avtopilot {status}", show_alert=True)
         bot.edit_message_reply_markup(chat_id=cid, message_id=msg_id, reply_markup=main_menu())
 
+    # 🟢 YENİ: UI Yaddaş İdarəetməsi
+    elif data == "menu_memory":
+        bot.edit_message_text("⏳ 🧠 *Yaddaş bazası oxunur...* Gözləyin.", chat_id=cid, message_id=msg_id, parse_mode="Markdown")
+        lessons = get_recent_memories()
+        
+        m = InlineKeyboardMarkup(row_width=1)
+        if not lessons:
+            msg = "🧠 **İnstitusional Yaddaş bomboşdur.**\n\n`/learn Mətn` əmrindən istifadə edərək bota yeni dərslər və bazar ssenariləri öyrədin."
+        else:
+            msg = "🧠 **Yaddaş Paneli (Son 5 Dərs):**\n\n"
+            for less in lessons:
+                msg += f"🔹 **ID:** `{less['id']}`\n📝 {less['text']}\n\n"
+                short_txt = less['text'][:25] + "..." if len(less['text']) > 25 else less['text']
+                m.add(InlineKeyboardButton(f"🗑 Sil: {short_txt}", callback_data=f"delmem_{less['id']}"))
+        
+        m.add(InlineKeyboardButton("⬅️ Ana Panel", callback_data="main_menu"))
+        bot.edit_message_text(msg, chat_id=cid, message_id=msg_id, reply_markup=m, parse_mode="Markdown")
+
+    elif data.startswith("delmem_"):
+        lesson_id = data.replace("delmem_", "")
+        try:
+            if memory_engine.index:
+                memory_engine.index.delete(ids=[lesson_id])
+                bot.answer_callback_query(call.id, "✅ Dərs uğurla silindi!", show_alert=True)
+                call.data = "menu_memory"
+                handle_callback(call)
+        except Exception as e:
+            bot.answer_callback_query(call.id, f"Xəta baş verdi: {e}", show_alert=True)
+
     elif data == "show_help":
-        help_txt = "📖 *Yardım Mərkəzi*\n`/judge NNE` yazaraq dərin analiz edə bilərsiniz.\n`/learn Mətn` yazaraq bota dərs keçə bilərsiniz."
+        help_txt = "📖 *Yardım Mərkəzi*\n`/judge NNE` yazaraq dərin analiz edə bilərsiniz.\n`/learn Mətn` yazaraq bota dərs keçə bilərsiniz.\n`/forget ID` yazaraq spesifik dərsi silə bilərsiniz."
         m = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Ana Panel", callback_data="main_menu"))
         bot.edit_message_text(help_txt, chat_id=cid, message_id=msg_id, reply_markup=m, parse_mode="Markdown")
+    
     try: bot.answer_callback_query(call.id)
     except Exception: pass
 
@@ -311,12 +368,36 @@ def handle_message(message: telebot.types.Message) -> None:
                 safe_reply(message, f"🚨 Yaddaşa yazma xətası: {e}")
                 
         threading.Thread(target=_write_memory, daemon=True).start()
-        return
+        return # 🟢 Vacib hissə: Gemini-yə getməsinin qarşısını alır
+
+    # 🗑️ ÖYRƏNİLƏNİ SİLMƏ (FORGET) ƏMRİ (Terminal üçün)
+    if lower.startswith("/forget"):
+        lesson_id = text.replace("/forget", "").strip()
+        if not lesson_id:
+            safe_reply(message, "⚠️ Silinəcək dərsin ID-sini yazmadın. Məsələn: `/forget lesson_1730001234`\n\n*(Sən həmçinin Paneldəki \"🧠 Yaddaş Paneli\" düyməsindən istifadə edərək bir kliklə də silə bilərsən)*", parse_mode="Markdown")
+            return
+            
+        safe_reply(message, f"⏳ 🗑 **Yaddaşdan Silinir:** `{lesson_id}`...", parse_mode="Markdown")
+        
+        def _delete_memory():
+            try:
+                if not memory_engine.index:
+                    safe_reply(message, "⚠️ Pinecone bazası aktiv deyil.")
+                    return
+                
+                memory_engine.index.delete(ids=[lesson_id])
+                safe_reply(message, f"✅ **Dərs Uğurla Yaddaşdan Silindi!** (`{lesson_id}`)\nBot artıq bu ssenarini xatırlamayacaq.", parse_mode="Markdown")
+            except Exception as e:
+                safe_reply(message, f"🚨 Silmə xətası: {e}")
+                
+        threading.Thread(target=_delete_memory, daemon=True).start()
+        return # 🟢 Vacib hissə: Gemini-yə getməsinin qarşısını alır
 
     if lower in ("/start", "/menu", "menu", "panel"):
         bot.send_message(cid, "🎛 **M.Genat 5.0 Pro Paneli**", reply_markup=main_menu(), parse_mode="Markdown")
         return
 
+    # Arxa planda Gemini Chat (Əgər heç bir əmrə düşmədisə)
     def _bg_chat() -> None:
         safe_reply(message, gemini_call("Sən M.Genat 5.0 Pro-san. Qısa və peşəkar cavab ver:\n\n" + text), parse_mode="Markdown")
     threading.Thread(target=_bg_chat, daemon=True).start()
