@@ -385,7 +385,7 @@ class MemoryAgent:
         try:
             if not self.client: return []
             resp = self.client.models.embed_content(
-                model="text-embedding-004",
+                model="gemini-embedding-001", # 🟢 YENİLƏNƏN SƏTİR BURADIR
                 contents=text
             )
             if hasattr(resp, 'embeddings') and resp.embeddings:
