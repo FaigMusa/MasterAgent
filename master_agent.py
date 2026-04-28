@@ -341,9 +341,9 @@ def _sched_wrapper(report_type: str) -> None:
     except Exception as e: log.error("Schedule xəta: %s", e)
 
 def schedule_loop() -> None:
-    schedule.every().day.at("06:00").do(_sched_wrapper, "SƏHƏR HESABATI (Tam Hakim)")
-    schedule.every().day.at("14:00").do(_sched_wrapper, "GÜNORTA HESABATI (Tam Hakim)")
-    schedule.every().day.at("19:00").do(_sched_wrapper, "AXŞAM HESABATI (Tam Hakim)")
+    schedule.every().day.at("08:00").do(_sched_wrapper, "SƏHƏR HESABATI (Tam Hakim)")
+   # schedule.every().day.at("14:00").do(_sched_wrapper, "GÜNORTA HESABATI (Tam Hakim)")
+    schedule.every().day.at("17:00").do(_sched_wrapper, "AXŞAM HESABATI (Tam Hakim)")
     while True:
         schedule.run_pending()
         time.sleep(30)
