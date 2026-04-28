@@ -357,25 +357,70 @@ class MasterAgent:
         return {"collected_at": _utc_now(), "crypto_news": [i.to_dict() for i in crypto], "macro_news": [i.to_dict() for i in macro], "top_signals": [i.to_dict() for i in combined[:5]], "master_ok": len(combined) > 0}
 
 class MemoryAgent:
-    def __init__(self, kb_path="knowledge_base"):
-        self.kb_path = kb_path
-        if not os.path.exists(self.kb_path): os.makedirs(self.kb_path)
-    def read_reports(self, max_chars=15000) -> str:
-        if not os.path.exists(self.kb_path): return "Yaddaş yoxdur."
-        files = [f for f in os.listdir(self.kb_path) if f.endswith(('.pdf', '.txt'))]
-        if not files: return "Yaddaş boşdur."
-        compiled_text = ""
-        for file in files:
-            file_path = os.path.join(self.kb_path, file)
+    def __init__(self, index_name="m-genat-memory"):
+        import os
+        
+        self.index_name = index_name
+        self.index = None
+        self.client = None
+
+        self.pc_key = os.getenv("PINECONE_API_KEY", "")
+        self.gemini_key = os.getenv("GEMINI_API_KEY", "")
+
+        if self.pc_key and self.gemini_key:
             try:
-                if file.endswith('.pdf'):
-                    with open(file_path, 'rb') as f:
-                        for page in PyPDF2.PdfReader(f).pages[:3]: compiled_text += page.extract_text() + "\n"
-                elif file.endswith('.txt'):
-                    with open(file_path, 'r', encoding='utf-8') as f: compiled_text += f"\n--- {file} ---\n" + f.read(5000) + "\n"
-            except: pass
-        if len(compiled_text) > max_chars: compiled_text = compiled_text[:max_chars] + "\n...[Kəsildi]..."
-        return compiled_text
+                from pinecone import Pinecone
+                from google import genai
+                self.client = genai.Client(api_key=self.gemini_key)
+                self.pc = Pinecone(api_key=self.pc_key)
+                self.index = self.pc.Index(self.index_name)
+                log.info("🧠 M.Genat Memory (Pinecone RAG) uğurla bağlandı!")
+            except Exception as e:
+                log.error(f"Pinecone bağlantı xətası: {e}")
+        else:
+            log.warning("⚠️ PINECONE və ya GEMINI API Key tapılmadı!")
+
+    def _get_embedding(self, text: str) -> list[float]:
+        """Mətni 768 ölçülü riyazi vektora çevirir."""
+        try:
+            if not self.client: return []
+            resp = self.client.models.embed_content(
+                model="text-embedding-004",
+                contents=text
+            )
+            if hasattr(resp, 'embeddings') and resp.embeddings:
+                return resp.embeddings[0].values
+            return []
+        except Exception as e:
+            log.error(f"Embedding xətası: {e}")
+            return []
+
+    def read_reports(self, context_query: str = "Bazar çökməsi risk-off", max_chars=15000) -> str:
+        """Hakim üçün keçmiş təcrübələri və tarixi ssenariləri çəkir."""
+        if not self.index: return "⚠️ Yaddaş mərkəzi (Pinecone) aktiv deyil."
+
+        vector = self._get_embedding(context_query)
+        if not vector: return "Məlumat vektorlaşdırıla bilmədi."
+
+        try:
+            result = self.index.query(
+                vector=vector,
+                top_k=3,
+                include_metadata=True
+            )
+            
+            if not result.matches: return "Keçmiş yaddaşda bugünkü bazara oxşar ssenari tapılmadı."
+
+            memory_text = "📚 **İnstitusional Yaddaş (Tarixi Presedentlər):**\n"
+            for match in result.matches:
+                score = match.score
+                text = match.metadata.get("text", "")
+                if score > 0.65: # Yalnız %65-dən çox bənzərliyi olanları ciddiyə al
+                    memory_text += f"-[Oxşarlıq: %{int(score*100)}] {text}\n"
+
+            return memory_text
+        except Exception as e:
+            return f"Yaddaş oxuma xətası: {e}"
 
 def aggregate_context(symbols: list[str], cryptopanic_token: str, news_currencies: str = "BTC,ETH", llm_callback: Callable = None) -> dict:
     if not symbols: raise ValueError("Ticker tələb olunur.")
