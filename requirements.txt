@@ -9,3 +9,4 @@ pandas
 ta
 gunicorn
 PyPDF2
+pinecone-client
