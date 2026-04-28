@@ -1,6 +1,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║            M.Genat 5.0 Pro  ·  master_agent.py (Terminal İnterfeysi)         ║
+║  YENİLİKLƏR: Pinecone RAG İnteqrasiyası və /learn (Öyrənən Yaddaş) Əmri      ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -49,7 +50,7 @@ user_states = {}
 SCOUT_AUTO_ACTIVE = False 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GEMİNİ VƏ YARDIMÇILAR
+#  GEMİNİ VƏ YADDAŞ (MEMORY) MÜHƏRRİKLƏRİ
 # ══════════════════════════════════════════════════════════════════════════════
 _gemini_client: Optional[genai.Client] = None
 
@@ -77,6 +78,9 @@ def gemini_call(prompt: str, model: str = "gemini-2.5-flash", retries: int = 3) 
         except Exception as exc:
             if attempt < retries: time.sleep(wait); wait *= 2; continue
             return f"🚨 XƏTA: {exc}"
+
+# Qlobal RAG Yaddaş Agentini başladırıq
+memory_engine = data_engine.MemoryAgent()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 app = Flask(__name__)
@@ -108,6 +112,9 @@ def _auth(message_or_chat_id) -> bool:
     cid = getattr(message_or_chat_id, "chat", None)
     cid = str(cid.id) if cid else str(message_or_chat_id)
     return cid == str(CHAT_ID)
+
+def get_utc_timestamp() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  HESABAT GENERATİRƏSİ 
@@ -233,7 +240,7 @@ def handle_callback(call: telebot.types.CallbackQuery) -> None:
         bot.edit_message_reply_markup(chat_id=cid, message_id=msg_id, reply_markup=main_menu())
 
     elif data == "show_help":
-        help_txt = "📖 *Yardım Mərkəzi*\n`/judge NNE` yazaraq dərin analiz edə bilərsiniz."
+        help_txt = "📖 *Yardım Mərkəzi*\n`/judge NNE` yazaraq dərin analiz edə bilərsiniz.\n`/learn Mətn` yazaraq bota dərs keçə bilərsiniz."
         m = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Ana Panel", callback_data="main_menu"))
         bot.edit_message_text(help_txt, chat_id=cid, message_id=msg_id, reply_markup=m, parse_mode="Markdown")
     try: bot.answer_callback_query(call.id)
@@ -261,11 +268,49 @@ def handle_message(message: telebot.types.Message) -> None:
             return
 
     lower = text.lower()
+    
+    # ⚖️ HAKİM ƏMRİ
     if lower.startswith("/judge"):
         symbols_str = text.replace("/judge", "").strip()
         custom_symbols = [s.strip().upper() for s in symbols_str.split(",")] if symbols_str else None
         safe_reply(message, "⏳ ⚖️ *HAKİM REJİMİ:* Xüsusi analiz başladılır...", parse_mode="Markdown")
         threading.Thread(target=generate_report, args=(f"HAKİM ANALİZİ ({symbols_str or 'Portfel'})", cid, custom_symbols), daemon=True).start()
+        return
+
+    # 🧠 ÖYRƏNƏN YADDAŞ (LEARN) ƏMRİ
+    if lower.startswith("/learn"):
+        lesson_text = text.replace("/learn", "", 1).strip()
+        if not lesson_text:
+            safe_reply(message, "⚠️ Nəyi öyrənməli olduğumu yazmadın. Məsələn: `/learn 2024-də DXY qalxanda Qızıl düşmədi çünki...`", parse_mode="Markdown")
+            return
+            
+        safe_reply(message, "⏳ 🧠 **Yaddaşa Yazılır:** Dərs vektorlaşdırılıb Pinecone bazasına göndərilir...", parse_mode="Markdown")
+        
+        def _write_memory():
+            try:
+                if not memory_engine.index:
+                    safe_reply(message, "⚠️ Pinecone bazası aktiv deyil. API Key yoxla.")
+                    return
+                
+                vector = memory_engine._get_embedding(lesson_text)
+                if not vector:
+                    safe_reply(message, "⚠️ Mətni riyazi vektora çevirə bilmədim (Embedding xətası).")
+                    return
+                
+                lesson_id = f"lesson_{int(time.time())}"
+                
+                memory_engine.index.upsert(
+                    vectors=[{
+                        "id": lesson_id, 
+                        "values": vector, 
+                        "metadata": {"text": lesson_text, "type": "user_lesson", "date": get_utc_timestamp()}
+                    }]
+                )
+                safe_reply(message, f"✅ **Dərs Uğurla Yaddaşa Həkk Olundu!** (ID: `{lesson_id}`)\nBundan sonra Hakim (Judge) bu ssenari ilə qarşılaşanda sənin dərsinə istinad edəcək.", parse_mode="Markdown")
+            except Exception as e:
+                safe_reply(message, f"🚨 Yaddaşa yazma xətası: {e}")
+                
+        threading.Thread(target=_write_memory, daemon=True).start()
         return
 
     if lower in ("/start", "/menu", "menu", "panel"):
