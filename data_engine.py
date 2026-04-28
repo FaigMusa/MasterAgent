@@ -382,11 +382,13 @@ class MemoryAgent:
 
     def _get_embedding(self, text: str) -> list[float]:
         """Mətni 768 ölçülü riyazi vektora çevirir."""
+        from google.genai import types  # 🟢 Yeni kitabxana aləti
         try:
             if not self.client: return []
             resp = self.client.models.embed_content(
-                model="gemini-embedding-001", # 🟢 YENİLƏNƏN SƏTİR BURADIR
-                contents=text
+                model="gemini-embedding-001",
+                contents=text,
+                config=types.EmbedContentConfig(output_dimensionality=768) # 🟢 Məlumatı 768-ə sıxırıq!
             )
             if hasattr(resp, 'embeddings') and resp.embeddings:
                 return resp.embeddings[0].values
